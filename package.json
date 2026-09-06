@@ -5,8 +5,8 @@
   "description": "A local-first daily planning system for balancing IELTS preparation and research work.",
   "type": "module",
   "scripts": {
-    "test": "node --check app.js && node smoke-test.mjs",
-    "start": "py -m http.server 8000"
+    "test": "node --check app.js && node --check scripts/serve.mjs && node smoke-test.mjs",
+    "start": "node scripts/serve.mjs"
   },
   "keywords": [
     "planner",

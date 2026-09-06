@@ -545,6 +545,10 @@ textarea:focus {
   z-index: 10;
 }
 
+.screenshot-mode .timer-panel {
+  position: static;
+}
+
 .timer-panel .section-kicker {
   color: var(--lime);
 }

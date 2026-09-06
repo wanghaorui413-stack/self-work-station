@@ -156,6 +156,12 @@ const CATEGORY_ORDER = [
 const dateKey = formatDateKey(new Date());
 const storageKey = `daily-balance:${dateKey}`;
 const settingsKey = "daily-balance:settings";
+const isDemoMode =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("demo") === "1";
+const isScreenshotMode =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("screenshot") === "1";
 
 let state = loadState();
 let timerInterval = null;
@@ -177,6 +183,10 @@ function defaultState() {
 }
 
 function loadState() {
+  if (isDemoMode) {
+    return { ...defaultState(), ...createDemoState(0) };
+  }
+
   try {
     return { ...defaultState(), ...JSON.parse(localStorage.getItem(storageKey)) };
   } catch {
@@ -185,10 +195,20 @@ function loadState() {
 }
 
 function saveState() {
+  if (isDemoMode) return;
   localStorage.setItem(storageKey, JSON.stringify(state));
 }
 
 function loadSettings() {
+  if (isDemoMode) {
+    return {
+      totalMinutes: "360",
+      startTime: "09:00",
+      breakMinutes: "10",
+      longBreakMinutes: "45",
+    };
+  }
+
   try {
     return {
       totalMinutes: "360",
@@ -208,6 +228,7 @@ function loadSettings() {
 }
 
 function saveSettings() {
+  if (isDemoMode) return;
   const settings = {
     totalMinutes: dom.totalMinutes.value,
     startTime: dom.startTime.value,
@@ -319,7 +340,104 @@ function getHistoryDateKeys(days = HISTORY_DAYS) {
 }
 
 function loadStateForDate(key) {
+  if (isDemoMode) {
+    return createDemoStateForDate(key);
+  }
   return safeParseState(localStorage.getItem(`${STORE_PREFIX}${key}`));
+}
+
+function createDemoStateForDate(key) {
+  const dateKeys = getHistoryDateKeys(3);
+  const offset = dateKeys.indexOf(key);
+  return offset >= 0 ? createDemoState(offset) : null;
+}
+
+function createDemoState(offset) {
+  const demoPlans = [
+    {
+      plan: createDemoPlan([35, 60, 50, 65, 60, 35, 55]),
+      tasks: {
+        vocabulary: {
+          complete: true,
+          goal: "复习旧词 120 个 + 错词 20 个",
+          completedAt: "demo",
+        },
+        research1: {
+          complete: true,
+          goal: "完成图表说明初稿",
+          completedAt: "demo",
+        },
+        listening: {
+          complete: true,
+          goal: "Section 3 精听错题句",
+          completedAt: "demo",
+        },
+        reading: {
+          complete: true,
+          goal: "限时一篇 + 5 个同义替换",
+          completedAt: "demo",
+        },
+        research2: {
+          complete: false,
+          goal: "整理实验结果判断",
+        },
+        speaking: {
+          complete: false,
+          goal: "录 2 个 Part 2 话题",
+          quickStarts: 1,
+        },
+        writing: {
+          complete: false,
+          goal: "Task 2 提纲 + 主体段",
+          quickStarts: 2,
+        },
+      },
+      reflection:
+        "今天阅读进入状态很快，但写作还是容易拖。明天写作先做 5 分钟提纲。",
+    },
+    {
+      plan: createDemoPlan([30, 45, 40, 50, 45, 30, 45]),
+      tasks: {
+        vocabulary: { complete: true },
+        research1: { complete: true },
+        listening: { complete: true },
+        reading: { complete: true },
+        research2: { complete: true },
+        speaking: { complete: false },
+        writing: { complete: false },
+      },
+      reflection: "科研完成一轮修改，输出类雅思任务被挤掉。",
+    },
+    {
+      plan: createDemoPlan([30, 45, 40, 50, 45, 30, 45]),
+      tasks: {
+        vocabulary: { complete: true },
+        research1: { complete: true },
+        listening: { complete: false },
+        reading: { complete: true },
+        research2: { complete: true },
+        speaking: { complete: true },
+        writing: { complete: false },
+      },
+      reflection: "口语完成录音，但听力和写作复盘不足。",
+    },
+  ];
+
+  return demoPlans[offset] || null;
+}
+
+function createDemoPlan(durations) {
+  let cursor = 9 * 60;
+  return ORDER.map((id, index) => {
+    const start = cursor;
+    const duration = durations[index];
+    cursor += duration;
+    const end = cursor;
+    if (index < ORDER.length - 1) {
+      cursor += id === "reading" ? 45 : 10;
+    }
+    return { id, start, end, duration };
+  });
 }
 
 function hasDayActivity(dayState) {
@@ -890,6 +1008,13 @@ function flashSaveStatus() {
 }
 
 function initialize() {
+  if (isDemoMode) {
+    document.body.classList.add("demo-mode");
+  }
+  if (isScreenshotMode) {
+    document.body.classList.add("screenshot-mode");
+  }
+
   const settings = loadSettings();
   dom.totalMinutes.value = settings.totalMinutes;
   dom.startTime.value = settings.startTime;
