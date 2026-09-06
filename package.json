@@ -1,0 +1,20 @@
+{
+  "name": "daily-balance-planner",
+  "version": "0.2.0",
+  "private": false,
+  "description": "A local-first daily planning system for balancing IELTS preparation and research work.",
+  "type": "module",
+  "scripts": {
+    "test": "node --check app.js && node smoke-test.mjs",
+    "start": "py -m http.server 8000"
+  },
+  "keywords": [
+    "planner",
+    "local-first",
+    "ielts",
+    "productivity",
+    "portfolio"
+  ],
+  "author": "Haorui Wang",
+  "license": "MIT"
+}

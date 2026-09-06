@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="帮助均衡安排雅思学习与科研工作的本地每日任务计划器"
+    />
+    <title>每日均衡计划</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">DAILY BALANCE</p>
+          <h1>今天不求做完一切，<br />只求每件重要的事都向前一步。</h1>
+          <p id="todayLabel" class="date-label"></p>
+        </div>
+
+        <section class="progress-card" aria-label="今日进度">
+          <div class="progress-ring" id="progressRing">
+            <span id="progressPercent">0%</span>
+          </div>
+          <div>
+            <p class="muted">今日完成</p>
+            <strong id="progressText">0 / 0 项</strong>
+            <p id="focusSummary" class="small-text"></p>
+          </div>
+        </section>
+      </header>
+
+      <section class="control-panel" aria-labelledby="settingsTitle">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">先定边界，再开始</p>
+            <h2 id="settingsTitle">今天能投入多少时间？</h2>
+          </div>
+          <button id="notificationButton" class="secondary-button" type="button">
+            开启到时提醒
+          </button>
+        </div>
+
+        <div class="settings-grid">
+          <label>
+            <span>专注总时长</span>
+            <select id="totalMinutes">
+              <option value="180">3 小时｜最低维持</option>
+              <option value="240">4 小时｜轻量日</option>
+              <option value="360" selected>6 小时｜标准日</option>
+              <option value="480">8 小时｜充足日</option>
+            </select>
+          </label>
+
+          <label>
+            <span>开始时间</span>
+            <input id="startTime" type="time" value="09:00" />
+          </label>
+
+          <label>
+            <span>任务间休息</span>
+            <select id="breakMinutes">
+              <option value="5">5 分钟</option>
+              <option value="10" selected>10 分钟</option>
+              <option value="15">15 分钟</option>
+            </select>
+          </label>
+
+          <label>
+            <span>午间长休息</span>
+            <select id="longBreakMinutes">
+              <option value="30">30 分钟</option>
+              <option value="45" selected>45 分钟</option>
+              <option value="60">60 分钟</option>
+            </select>
+          </label>
+
+          <button id="regenerateButton" class="primary-button" type="button">
+            重新生成今日计划
+          </button>
+        </div>
+      </section>
+
+      <section class="principle-strip" aria-label="执行原则">
+        <p><span>01</span> 每类任务每天至少出现一次</p>
+        <p><span>02</span> 不连续安排两个高强度区块</p>
+        <p><span>03</span> 畏惧时先做 5 分钟，不等状态</p>
+      </section>
+
+      <section class="dashboard-section" aria-labelledby="dashboardTitle">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">7 日反馈闭环</p>
+            <h2 id="dashboardTitle">不是只打卡，而是发现偏科模式</h2>
+          </div>
+          <p class="small-text">数据仅保存在当前浏览器本地</p>
+        </div>
+
+        <div class="analytics-grid">
+          <article class="analytics-card">
+            <span class="analytics-label">平均完成率</span>
+            <strong id="analyticsCompletion">0%</strong>
+            <p>近 7 天计划任务的完成比例</p>
+          </article>
+          <article class="analytics-card">
+            <span class="analytics-label">薄弱模块</span>
+            <strong id="analyticsWeakness">暂无</strong>
+            <p>根据近 7 天跳过次数自动判断</p>
+          </article>
+          <article class="analytics-card">
+            <span class="analytics-label">连续均衡日</span>
+            <strong id="analyticsStreak">0 天</strong>
+            <p>当天所有类别至少推进一次才计入</p>
+          </article>
+          <article class="analytics-card">
+            <span class="analytics-label">已完成专注</span>
+            <strong id="analyticsTotalTime">0 分钟</strong>
+            <p>近 7 天标记完成的计划时长</p>
+          </article>
+        </div>
+
+        <div class="feedback-grid">
+          <article class="feedback-card">
+            <h3>模块完成分布</h3>
+            <div id="analyticsBars" class="bar-list"></div>
+          </article>
+          <article class="feedback-card">
+            <h3>今日策略说明</h3>
+            <ul id="planRationale" class="insight-list"></ul>
+          </article>
+          <article class="feedback-card">
+            <h3>系统提醒</h3>
+            <ul id="insightList" class="insight-list"></ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="schedule-section" aria-labelledby="scheduleTitle">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">自动生成</p>
+            <h2 id="scheduleTitle">今日时间表</h2>
+          </div>
+          <button id="resetButton" class="text-button" type="button">重置今日记录</button>
+        </div>
+
+        <div id="scheduleList" class="schedule-list"></div>
+      </section>
+
+      <section class="timer-panel" id="timerPanel" aria-live="polite">
+        <div>
+          <p class="section-kicker">当前任务</p>
+          <h2 id="timerTaskName">选择一个任务开始</h2>
+          <p id="timerHint" class="muted">计时结束后会提醒你切换，不让单项任务吞掉整天。</p>
+        </div>
+        <div class="timer-actions">
+          <strong id="timerDisplay">00:00</strong>
+          <button id="pauseButton" class="secondary-button" type="button" disabled>
+            暂停
+          </button>
+          <button id="finishButton" class="primary-button" type="button" disabled>
+            完成并切换
+          </button>
+        </div>
+      </section>
+
+      <section class="reflection-card" aria-labelledby="reflectionTitle">
+        <div>
+          <p class="section-kicker">收尾只需一分钟</p>
+          <h2 id="reflectionTitle">今天最值得保留的进展</h2>
+        </div>
+        <textarea
+          id="reflection"
+          rows="3"
+          placeholder="例如：听力精听时发现自己总漏掉转折词；科研完成了图 3 的初稿……"
+        ></textarea>
+        <p class="save-status" id="saveStatus">内容自动保存在本机浏览器中</p>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
