@@ -5,16 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="帮助均衡安排雅思学习与科研工作的本地每日任务计划器"
+      content="把招聘邮件里的面试、测评自动排进日程，并均衡安排雅思与科研的本地个人工作台"
     />
-    <title>每日均衡计划</title>
+    <title>个人工作台</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <main class="app-shell">
       <header class="hero">
         <div>
-          <p class="eyebrow">DAILY BALANCE</p>
+          <p class="eyebrow">SELF WORK STATION</p>
           <h1>今天不求做完一切，<br />只求每件重要的事都向前一步。</h1>
           <p id="todayLabel" class="date-label"></p>
         </div>
@@ -30,6 +32,21 @@
           </div>
         </section>
       </header>
+
+      <section class="recruit-section" aria-labelledby="recruitTitle">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">招聘事项 · 每天 8:30 / 18:30 从邮件同步</p>
+            <h2 id="recruitTitle">先占住硬安排，再分配剩下的时间</h2>
+          </div>
+          <div class="recruit-sync">
+            <p id="syncStatus" class="small-text">正在读取…</p>
+            <button id="syncButton" class="secondary-button" type="button">立即刷新</button>
+          </div>
+        </div>
+        <div id="recruitAlerts" class="recruit-alerts"></div>
+        <div id="recruitList" class="recruit-list"></div>
+      </section>
 
       <section class="control-panel" aria-labelledby="settingsTitle">
         <div class="section-heading">
@@ -56,6 +73,11 @@
           <label>
             <span>开始时间</span>
             <input id="startTime" type="time" value="09:00" />
+          </label>
+
+          <label>
+            <span>最晚结束</span>
+            <input id="dayEnd" type="time" value="21:30" />
           </label>
 
           <label>
@@ -94,7 +116,7 @@
             <p class="section-kicker">7 日反馈闭环</p>
             <h2 id="dashboardTitle">不是只打卡，而是发现偏科模式</h2>
           </div>
-          <p class="small-text">数据仅保存在当前浏览器本地</p>
+          <p class="small-text">数据仅保存在本机；被招聘事项挤占的模块不计入跳过</p>
         </div>
 
         <div class="analytics-grid">
@@ -139,7 +161,7 @@
       <section class="schedule-section" aria-labelledby="scheduleTitle">
         <div class="section-heading">
           <div>
-            <p class="section-kicker">自动生成</p>
+            <p class="section-kicker">自动生成 · 招聘事项与均衡任务合在一起</p>
             <h2 id="scheduleTitle">今日时间表</h2>
           </div>
           <button id="resetButton" class="text-button" type="button">重置今日记录</button>
@@ -181,6 +203,7 @@
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
+    <script src="recruiting.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

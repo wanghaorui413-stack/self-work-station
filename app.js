@@ -89,6 +89,7 @@ const dom = {
   focusSummary: document.querySelector("#focusSummary"),
   totalMinutes: document.querySelector("#totalMinutes"),
   startTime: document.querySelector("#startTime"),
+  dayEnd: document.querySelector("#dayEnd"),
   breakMinutes: document.querySelector("#breakMinutes"),
   longBreakMinutes: document.querySelector("#longBreakMinutes"),
   regenerateButton: document.querySelector("#regenerateButton"),
@@ -111,11 +112,32 @@ const dom = {
   analyticsBars: document.querySelector("#analyticsBars"),
   planRationale: document.querySelector("#planRationale"),
   insightList: document.querySelector("#insightList"),
+  syncStatus: document.querySelector("#syncStatus"),
+  syncButton: document.querySelector("#syncButton"),
+  recruitAlerts: document.querySelector("#recruitAlerts"),
+  recruitList: document.querySelector("#recruitList"),
 };
 
 const HISTORY_DAYS = 7;
 const TIME_ZONE = "Asia/Shanghai";
 const STORE_PREFIX = "daily-balance:";
+const DEFAULT_SETTINGS = {
+  totalMinutes: "360",
+  startTime: "09:00",
+  dayEnd: "21:30",
+  breakMinutes: "10",
+  longBreakMinutes: "45",
+};
+// 招聘事项挤满当天时，均衡任务按这个顺序保底（科研 + 单词）。
+const CROWD_PRIORITY = ["vocabulary", "research1", "research2"];
+const RECRUIT_POLL_MS = 10 * 60 * 1000;
+const REMINDER_CHECK_MS = 30 * 1000;
+const FIRED_REMINDERS_KEY = "self-work-station:fired-reminders";
+const RECRUIT_UPCOMING_DAYS = 14;
+const RECRUIT_TYPE_ICONS = {
+  appointment: "约",
+  deadline: "限",
+};
 
 const CATEGORY_DEFINITIONS = {
   vocabulary: {
@@ -164,6 +186,9 @@ const isScreenshotMode =
   new URLSearchParams(window.location.search).get("screenshot") === "1";
 
 let state = loadState();
+let recruitData = { items: [], lastSyncedAt: null };
+let recruitSource = "loading"; // loading | server | offline
+let recruitSchedule = { placements: {}, unplaceable: [] };
 let timerInterval = null;
 let activeTimer = null;
 let toastTimeout = null;
@@ -200,73 +225,66 @@ function saveState() {
 }
 
 function loadSettings() {
-  if (isDemoMode) {
-    return {
-      totalMinutes: "360",
-      startTime: "09:00",
-      breakMinutes: "10",
-      longBreakMinutes: "45",
-    };
-  }
-
+  if (isDemoMode) return { ...DEFAULT_SETTINGS };
   try {
-    return {
-      totalMinutes: "360",
-      startTime: "09:00",
-      breakMinutes: "10",
-      longBreakMinutes: "45",
-      ...JSON.parse(localStorage.getItem(settingsKey)),
-    };
+    return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(settingsKey)) };
   } catch {
-    return {
-      totalMinutes: "360",
-      startTime: "09:00",
-      breakMinutes: "10",
-      longBreakMinutes: "45",
-    };
+    return { ...DEFAULT_SETTINGS };
   }
+}
+
+function currentSettings() {
+  return {
+    totalMinutes: dom.totalMinutes.value,
+    startTime: dom.startTime.value || DEFAULT_SETTINGS.startTime,
+    dayEnd: dom.dayEnd.value || DEFAULT_SETTINGS.dayEnd,
+    breakMinutes: dom.breakMinutes.value,
+    longBreakMinutes: dom.longBreakMinutes.value,
+  };
 }
 
 function saveSettings() {
   if (isDemoMode) return;
-  const settings = {
-    totalMinutes: dom.totalMinutes.value,
-    startTime: dom.startTime.value,
-    breakMinutes: dom.breakMinutes.value,
-    longBreakMinutes: dom.longBreakMinutes.value,
-  };
-  localStorage.setItem(settingsKey, JSON.stringify(settings));
+  localStorage.setItem(settingsKey, JSON.stringify(currentSettings()));
 }
 
 function roundToFive(value) {
   return Math.max(5, Math.round(value / 5) * 5);
 }
 
-function allocateDurations(totalMinutes) {
-  const minimumTotal = ORDER.reduce(
-    (sum, key) => sum + TASK_TYPES[key].minimum,
-    0,
-  );
+function minimumTotalFor(ids) {
+  return ids.reduce((sum, key) => sum + TASK_TYPES[key].minimum, 0);
+}
+
+function allocateDurations(totalMinutes, ids = ORDER) {
+  const minimumTotal = minimumTotalFor(ids);
+  const weightTotal = ids.reduce((sum, key) => sum + TASK_TYPES[key].weight, 0);
   const result = {};
 
   if (totalMinutes < minimumTotal) {
     const scale = totalMinutes / minimumTotal;
-    ORDER.forEach((key) => {
+    ids.forEach((key) => {
       result[key] = roundToFive(TASK_TYPES[key].minimum * scale);
     });
   } else {
     const extra = totalMinutes - minimumTotal;
-    ORDER.forEach((key) => {
+    ids.forEach((key) => {
       result[key] = roundToFive(
-        TASK_TYPES[key].minimum + extra * TASK_TYPES[key].weight,
+        TASK_TYPES[key].minimum + (extra * TASK_TYPES[key].weight) / weightTotal,
       );
     });
   }
 
-  const allocated = ORDER.reduce((sum, key) => sum + result[key], 0);
-  result.research2 += totalMinutes - allocated;
+  // 取整误差放进最后一个科研块（没有科研就放进最后一项）。
+  const sink = ids.includes("research2")
+    ? "research2"
+    : ids.includes("research1")
+      ? "research1"
+      : ids[ids.length - 1];
+  const allocated = ids.reduce((sum, key) => sum + result[key], 0);
+  result[sink] += totalMinutes - allocated;
 
-  if (result.research2 < 10) {
+  if (sink === "research2" && result.research2 < 10 && ids.includes("research1")) {
     const shortfall = 10 - result.research2;
     result.research2 = 10;
     result.research1 = Math.max(10, result.research1 - shortfall);
@@ -275,29 +293,54 @@ function allocateDurations(totalMinutes) {
   return result;
 }
 
-function buildPlan() {
-  const totalMinutes = Number(dom.totalMinutes.value);
-  const breakMinutes = Number(dom.breakMinutes.value);
-  const longBreakMinutes = Number(dom.longBreakMinutes.value);
-  const durations = allocateDurations(totalMinutes);
-  let cursor = timeToMinutes(dom.startTime.value);
+function breakOverhead(ids, breakMinutes, longBreakMinutes) {
+  if (ids.length <= 1) return 0;
+  const longBreak = ids.slice(0, -1).includes("reading") ? longBreakMinutes - breakMinutes : 0;
+  return (ids.length - 1) * breakMinutes + longBreak;
+}
 
-  return ORDER.map((key, index) => {
-    const start = cursor;
-    const duration = durations[key];
-    cursor += duration;
-    const end = cursor;
-    if (index < ORDER.length - 1) {
-      cursor += key === "reading" ? longBreakMinutes : breakMinutes;
+// 选出今天要排的均衡任务：空档够就全排；不够最低保障时只保科研 + 单词，其余算挤占。
+function chooseBalanceTasks(totalMinutes, freeMinutes, breakMinutes, longBreakMinutes) {
+  const budget = (ids) =>
+    Math.min(totalMinutes, freeMinutes - breakOverhead(ids, breakMinutes, longBreakMinutes));
+
+  if (budget(ORDER) >= minimumTotalFor(ORDER)) {
+    return { ids: ORDER, total: budget(ORDER) };
+  }
+  for (let count = CROWD_PRIORITY.length; count >= 1; count -= 1) {
+    const ids = ORDER.filter((id) => CROWD_PRIORITY.slice(0, count).includes(id));
+    if (budget(ids) >= minimumTotalFor(ids) || count === 1) {
+      return { ids, total: Math.max(0, budget(ids)) };
     }
+  }
+  return { ids: [], total: 0 };
+}
 
-    return {
-      id: key,
-      start,
-      end,
-      duration,
-    };
+function buildPlan() {
+  const settings = currentSettings();
+  const totalMinutes = Number(settings.totalMinutes);
+  const breakMinutes = Number(settings.breakMinutes);
+  const longBreakMinutes = Number(settings.longBreakMinutes);
+  const busy = todayBusyMinutes();
+  const free = Recruiting.freeMinutes(dateKey, busy, settings);
+  const chosen = chooseBalanceTasks(totalMinutes, free, breakMinutes, longBreakMinutes);
+  const ids = chosen.total >= 10 ? chosen.ids : [];
+  const durations = ids.length ? allocateDurations(chosen.total, ids) : {};
+
+  const { plan, crowdedOut } = Recruiting.layoutBalanceTasks({
+    order: ids,
+    durations,
+    busy,
+    dayStart: timeToMinutes(settings.startTime),
+    dayEnd: timeToMinutes(settings.dayEnd),
+    breakMinutes,
+    longBreakAfter: "reading",
+    longBreakMinutes,
   });
+
+  state.crowdedOut = [...ORDER.filter((id) => !ids.includes(id)), ...crowdedOut];
+  state.busySignature = JSON.stringify(busy);
+  return plan;
 }
 
 function timeToMinutes(time) {
@@ -491,7 +534,12 @@ function summarizeDay(key, dayState) {
     plannedTaskCount: plannedTaskIds.length,
     completedMinutes,
     totalMinutes,
-    balanced: CATEGORY_ORDER.every((categoryId) => categories[categoryId].completed),
+    // 被挤占（没排进计划）的类别不算失衡。
+    balanced:
+      CATEGORY_ORDER.some((categoryId) => categories[categoryId].planned) &&
+      CATEGORY_ORDER.every(
+        (categoryId) => !categories[categoryId].planned || categories[categoryId].completed,
+      ),
     categories,
   };
 }
@@ -603,22 +651,28 @@ function buildInsights({ activeDayCount, completionRate, weakest, categoryStats,
 }
 
 function buildPlanRationale() {
-  const totalMinutes = Number(dom.totalMinutes.value);
-  const durations = allocateDurations(totalMinutes);
-  const researchMinutes = durations.research1 + durations.research2;
-  const ieltsMinutes =
-    durations.vocabulary +
-    durations.listening +
-    durations.reading +
-    durations.speaking +
-    durations.writing;
+  const plan = state.plan || [];
+  const minutesOf = (ids) =>
+    plan.filter((item) => ids.includes(item.id)).reduce((sum, item) => sum + item.duration, 0);
+  const researchMinutes = minutesOf(["research1", "research2"]);
+  const ieltsMinutes = minutesOf(["vocabulary", "listening", "reading", "speaking", "writing"]);
+  const busyMinutes = todayBusyMinutes().reduce((sum, block) => sum + block.end - block.start, 0);
+  const crowded = (state.crowdedOut || []).map((id) => TASK_TYPES[id].shortName);
 
-  return [
-    `今日先锁定 ${formatDuration(totalMinutes)} 专注总量，再按“最低保障 + 权重分配”生成计划。`,
-    `科研被拆成 ${formatDuration(durations.research1)} 和 ${formatDuration(durations.research2)} 两段，避免单项任务吞掉全天。`,
-    `雅思合计 ${formatDuration(ieltsMinutes)}，覆盖输入、输出和词汇；科研合计 ${formatDuration(researchMinutes)}。`,
-    "如果系统识别到弱项，先用提醒和 5 分钟启动处理回避，不直接牺牲其他模块的最低保障。",
-  ];
+  const lines = [];
+  if (busyMinutes) {
+    lines.push(`招聘事项今天占用 ${formatDuration(busyMinutes)}（含准备和缓冲），均衡任务只排在剩下的空档里。`);
+  }
+  lines.push(
+    `均衡任务共 ${formatDuration(researchMinutes + ieltsMinutes)}：雅思 ${formatDuration(ieltsMinutes)}，科研 ${formatDuration(researchMinutes)}，按“最低保障 + 权重分配”生成。`,
+  );
+  if (crowded.length) {
+    lines.push(`空档不够，${[...new Set(crowded)].join("、")}今天被挤占。这不算跳过，也不计入薄弱模块。`);
+  } else {
+    lines.push("科研拆成两段，避免单项任务吞掉全天；每类任务今天都至少出现一次。");
+  }
+  lines.push("如果系统识别到弱项，先用提醒和 5 分钟启动处理回避，不直接牺牲其他模块的最低保障。");
+  return lines;
 }
 
 function getTaskState(id) {
@@ -640,7 +694,17 @@ function render() {
 
   dom.scheduleList.innerHTML = "";
 
-  state.plan.forEach((item) => {
+  const timeline = [
+    ...state.plan.map((item) => ({ type: "balance", start: item.start, item })),
+    ...todayRecruitEntries(),
+  ].sort((a, b) => a.start - b.start);
+
+  timeline.forEach((entry) => {
+    if (entry.type === "recruit") {
+      dom.scheduleList.appendChild(renderRecruitTimelineCard(entry));
+      return;
+    }
+    const item = entry.item;
     const task = TASK_TYPES[item.id];
     const taskState = getTaskState(item.id);
     const card = document.createElement("article");
@@ -703,9 +767,500 @@ function render() {
     dom.scheduleList.appendChild(card);
   });
 
+  if (!state.plan.length && !timeline.length) {
+    dom.scheduleList.innerHTML =
+      '<p class="empty-note">今天的空档不够安排均衡任务。先把招聘事项做好，均衡任务明天补上。</p>';
+  }
+
   updateProgress();
   renderAnalytics();
+  renderRecruit();
   updateTimerPanel();
+}
+
+
+// ---------- 招聘事项 ----------
+
+function recruitSettings() {
+  const settings = currentSettings();
+  return { startTime: settings.startTime, dayEnd: settings.dayEnd };
+}
+
+function refreshRecruitSchedule() {
+  recruitSchedule = Recruiting.placeDeadlineTasks(
+    recruitData.items || [],
+    recruitSettings(),
+    Date.now(),
+  );
+}
+
+function todayBusyMinutes() {
+  return Recruiting.busyMinutesForDay(
+    dateKey,
+    recruitData.items || [],
+    recruitSchedule.placements,
+    recruitSettings(),
+  );
+}
+
+function recruitTypeLabel(item) {
+  return item.type || (item.kind === "appointment" ? "面试" : "截止任务");
+}
+
+// 招聘事项在今天时间表里的条目：固定日程按实际开始时间，截止任务按排定时段。
+function todayRecruitEntries() {
+  const entries = [];
+  for (const item of recruitData.items || []) {
+    if (!Recruiting.BLOCKING_STATUSES.includes(item.status)) continue;
+    if (item.kind === "appointment") {
+      const block = Recruiting.blockedTime(item, recruitSettings());
+      if (block && Recruiting.dateKeyOf(block.eventStart) === dateKey) {
+        entries.push({
+          type: "recruit",
+          item,
+          start: Recruiting.minutesOfDay(block.eventStart),
+          end: Recruiting.minutesOfDay(block.eventEnd),
+          block,
+        });
+      }
+    } else {
+      const slot = recruitSchedule.placements[item.id];
+      if (slot && Recruiting.dateKeyOf(slot.start) === dateKey) {
+        entries.push({
+          type: "recruit",
+          item,
+          start: Recruiting.minutesOfDay(slot.start),
+          end: Recruiting.minutesOfDay(slot.end),
+          slot,
+        });
+      }
+    }
+  }
+  return entries;
+}
+
+function safeLink(url) {
+  return /^https?:\/\//i.test(url || "") ? url : null;
+}
+
+function recruitLinkHtml(item) {
+  const link = safeLink(item.link);
+  const source = safeLink(item.sourceEmails?.[0]?.url);
+  return [
+    link ? `<a href="${escapeHtml(link)}" target="_blank" rel="noopener">打开链接</a>` : "",
+    item.location ? `<span>${escapeHtml(item.location)}</span>` : "",
+    source ? `<a href="${escapeHtml(source)}" target="_blank" rel="noopener">原邮件</a>` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function renderRecruitTimelineCard(entry) {
+  const { item } = entry;
+  const card = document.createElement("article");
+  card.className = "task-card recruit-card";
+  card.style.setProperty("--task-color", item.kind === "appointment" ? "#c0503a" : "#3f6fb0");
+  const detail =
+    item.kind === "appointment"
+      ? `占用 ${Recruiting.formatClock(entry.block.start)}-${Recruiting.formatClock(entry.block.end)}（含准备与缓冲）`
+      : `截止 ${Recruiting.formatDayLabel(Recruiting.parseTime(item.deadline))}${entry.slot.manual ? " · 手动指定" : " · 自动安排"}`;
+  card.innerHTML = `
+    <div class="task-time">${formatClock(entry.start)}<br />${formatClock(entry.end)}</div>
+    <div class="task-icon" aria-hidden="true">${RECRUIT_TYPE_ICONS[item.kind] || "招"}</div>
+    <div class="task-content">
+      <div class="task-meta">
+        <h3 class="task-title">${escapeHtml(Recruiting.describe(item))}</h3>
+        <span class="duration-pill recruit-pill">${escapeHtml(recruitTypeLabel(item))}</span>
+        ${statusChip(item)}
+      </div>
+      <p class="task-description">${escapeHtml(detail)}</p>
+      <p class="recruit-links">${recruitLinkHtml(item)}</p>
+    </div>
+    <div class="task-controls">${recruitActionButtons(item)}</div>
+  `;
+  bindRecruitActions(card, item);
+  return card;
+}
+
+function statusChip(item) {
+  return `<span class="status-chip status-${item.status}">${Recruiting.STATUS_LABELS[item.status] || item.status}</span>`;
+}
+
+function recruitActionButtons(item) {
+  const buttons = [];
+  if (item.status === "pending_confirmation") {
+    buttons.push('<button class="task-button complete" type="button" data-recruit="confirm">已回复确认</button>');
+  }
+  if (item.status === "changed") {
+    buttons.push('<button class="task-button complete" type="button" data-recruit="ack">知道了</button>');
+  }
+  if (item.kind === "deadline" && Recruiting.BLOCKING_STATUSES.includes(item.status)) {
+    buttons.push('<button class="task-button complete" type="button" data-recruit="done">标记完成</button>');
+    buttons.push('<button class="task-button" type="button" data-recruit="move">改时间</button>');
+  }
+  if (item.kind === "appointment" && Recruiting.BLOCKING_STATUSES.includes(item.status)) {
+    buttons.push('<button class="task-button" type="button" data-recruit="done">已结束</button>');
+  }
+  if (Recruiting.isOpen(item)) {
+    buttons.push('<button class="task-button quiet" type="button" data-recruit="cancel">取消</button>');
+  }
+  return buttons.join("");
+}
+
+function bindRecruitActions(container, item) {
+  container.querySelectorAll("[data-recruit]").forEach((button) => {
+    button.addEventListener("click", () => handleRecruitAction(item, button.dataset.recruit, container));
+  });
+}
+
+function toLocalInput(value) {
+  const ms = Recruiting.parseTime(value);
+  return ms === null ? "" : Recruiting.toIso(ms).slice(0, 16);
+}
+
+function fromLocalInput(value) {
+  return value ? `${value}:00+08:00` : null;
+}
+
+async function handleRecruitAction(item, action, container) {
+  if (action === "confirm" || action === "ack") {
+    await patchRecruitItem(item.id, { status: "scheduled" }, "已更新。");
+  }
+  if (action === "done") {
+    await patchRecruitItem(
+      item.id,
+      { status: "done", completedAt: new Date().toISOString() },
+      `${Recruiting.describe(item)} 已完成。`,
+    );
+  }
+  if (action === "cancel") {
+    if (!window.confirm(`确定把「${Recruiting.describe(item)}」标为已取消吗？`)) return;
+    await patchRecruitItem(item.id, { status: "cancelled" }, "已取消，并从日程中移除。");
+  }
+  if (action === "move") {
+    if (container.querySelector(".move-form")) return;
+    const slot = recruitSchedule.placements[item.id];
+    const form = document.createElement("form");
+    form.className = "move-form";
+    form.innerHTML = `
+      <label><span>改到</span><input type="datetime-local" required value="${slot ? toLocalInput(slot.start) : ""}" /></label>
+      <button class="task-button complete" type="submit">保存</button>
+      ${item.manualSlot ? '<button class="task-button" type="button" data-auto>恢复自动安排</button>' : ""}
+    `;
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const value = form.querySelector("input").value;
+      await patchRecruitItem(item.id, { manualSlot: { start: fromLocalInput(value) } }, "已改到指定时间。");
+    });
+    form.querySelector("[data-auto]")?.addEventListener("click", () =>
+      patchRecruitItem(item.id, { manualSlot: null }, "已恢复自动安排。"),
+    );
+    container.querySelector(".task-content").appendChild(form);
+  }
+}
+
+// 待核对事项的补全表单：补齐时间后进入日程。
+function reviewFormHtml(item) {
+  const isAppointment = item.kind !== "deadline";
+  return `
+    <form class="review-form" data-item="${escapeHtml(item.id)}">
+      <label><span>类型</span>
+        <select name="kind">
+          <option value="appointment" ${isAppointment ? "selected" : ""}>固定日程（面试等）</option>
+          <option value="deadline" ${isAppointment ? "" : "selected"}>截止任务（测评、AI 面试等）</option>
+        </select>
+      </label>
+      <label data-for="appointment"><span>开始时间</span>
+        <input name="start" type="datetime-local" value="${toLocalInput(item.start)}" /></label>
+      <label data-for="appointment"><span>时长（分钟）</span>
+        <input name="durationMinutes" type="number" min="15" step="15" value="${Number(item.durationMinutes) || 60}" /></label>
+      <label data-for="appointment"><span>形式</span>
+        <select name="mode">
+          <option value="online" ${item.mode === "offline" ? "" : "selected"}>线上</option>
+          <option value="offline" ${item.mode === "offline" ? "selected" : ""}>线下</option>
+        </select>
+      </label>
+      <label data-for="deadline"><span>截止时间</span>
+        <input name="deadline" type="datetime-local" value="${toLocalInput(item.deadline)}" /></label>
+      <label data-for="deadline"><span>预计用时（分钟）</span>
+        <input name="estimatedMinutes" type="number" min="15" step="15" value="${Number(item.estimatedMinutes) || 60}" /></label>
+      <button class="task-button complete" type="submit">确认并排进日程</button>
+    </form>
+  `;
+}
+
+function bindReviewForm(form, item) {
+  const syncVisibility = () => {
+    const kind = form.elements.kind.value;
+    form.querySelectorAll("[data-for]").forEach((label) => {
+      label.hidden = label.dataset.for !== kind;
+    });
+  };
+  form.elements.kind.addEventListener("change", syncVisibility);
+  syncVisibility();
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const kind = form.elements.kind.value;
+    const patch = { kind, status: "scheduled" };
+    if (kind === "appointment") {
+      if (!form.elements.start.value) return showToast("请填写开始时间。");
+      patch.start = fromLocalInput(form.elements.start.value);
+      patch.durationMinutes = Number(form.elements.durationMinutes.value) || 60;
+      patch.mode = form.elements.mode.value;
+    } else {
+      if (!form.elements.deadline.value) return showToast("请填写截止时间。");
+      patch.deadline = fromLocalInput(form.elements.deadline.value);
+      patch.estimatedMinutes = Number(form.elements.estimatedMinutes.value) || 60;
+    }
+    await patchRecruitItem(item.id, patch, "已补全，已排进日程。");
+  });
+}
+
+function upcomingRecruitItems() {
+  const now = Date.now();
+  const horizon = now + RECRUIT_UPCOMING_DAYS * 24 * 60 * 60 * 1000;
+  const sortTime = (item) => {
+    if (item.kind === "appointment") return Recruiting.parseTime(item.start) ?? Infinity;
+    return recruitSchedule.placements[item.id]?.start ?? Recruiting.parseTime(item.deadline) ?? Infinity;
+  };
+  return (recruitData.items || [])
+    .filter((item) => Recruiting.BLOCKING_STATUSES.includes(item.status))
+    .filter((item) => {
+      const end =
+        item.kind === "appointment"
+          ? (Recruiting.parseTime(item.start) ?? 0) + (Number(item.durationMinutes) || 60) * 60000
+          : Recruiting.parseTime(item.deadline) ?? Infinity;
+      return end > now && sortTime(item) < horizon;
+    })
+    .sort((a, b) => sortTime(a) - sortTime(b));
+}
+
+function recruitWhenText(item) {
+  if (item.kind === "appointment") {
+    const start = Recruiting.parseTime(item.start);
+    return `${Recruiting.formatDayLabel(start)} · ${Number(item.durationMinutes) || 60} 分钟 · ${item.mode === "offline" ? "线下" : "线上"}`;
+  }
+  const slot = recruitSchedule.placements[item.id];
+  const deadline = Recruiting.parseTime(item.deadline);
+  const planned = slot
+    ? `安排在 ${Recruiting.formatDayLabel(slot.start)}`
+    : "排不进日程，请手动改时间";
+  return `${planned} · 截止 ${Recruiting.formatDayLabel(deadline)} · 约 ${Number(item.estimatedMinutes) || 60} 分钟`;
+}
+
+function renderRecruit() {
+  const items = recruitData.items || [];
+  const lastSynced = Recruiting.parseTime(recruitData.lastSyncedAt);
+  if (recruitSource === "offline") {
+    dom.syncStatus.textContent = "未连接本地服务器：请用开机自启的工作台打开（http://127.0.0.1:8000）。";
+  } else if (recruitSource === "loading") {
+    dom.syncStatus.textContent = "正在读取…";
+  } else {
+    dom.syncStatus.textContent = lastSynced
+      ? `上次从邮件同步：${Recruiting.formatDayLabel(lastSynced)}`
+      : "还没有从邮件同步过";
+  }
+
+  const alerts = items.filter((item) => item.status === "needs_review");
+  const stuck = recruitSchedule.unplaceable
+    .map((id) => items.find((item) => item.id === id))
+    .filter(Boolean);
+  dom.recruitAlerts.innerHTML = "";
+  alerts.forEach((item) => {
+    const card = document.createElement("article");
+    card.className = "recruit-alert";
+    card.innerHTML = `
+      <div class="recruit-alert-head">
+        ${statusChip(item)}
+        <strong>${escapeHtml(Recruiting.describe(item))}</strong>
+        <button class="text-button" type="button" data-recruit="cancel">不是招聘事项，忽略</button>
+      </div>
+      <p>${escapeHtml(item.reviewNote || "邮件里的时间信息不完整，请补全。")}</p>
+      <p class="recruit-links">${recruitLinkHtml(item)}</p>
+      ${reviewFormHtml(item)}
+    `;
+    bindReviewForm(card.querySelector(".review-form"), item);
+    bindRecruitActions(card.querySelector(".recruit-alert-head"), item);
+    dom.recruitAlerts.appendChild(card);
+  });
+  stuck.forEach((item) => {
+    const card = document.createElement("article");
+    card.className = "recruit-alert is-warning";
+    card.innerHTML = `<p><strong>${escapeHtml(Recruiting.describe(item))}</strong>：截止前找不到足够长的空档，请在下方用“改时间”手动指定。</p>`;
+    dom.recruitAlerts.appendChild(card);
+  });
+
+  const upcoming = upcomingRecruitItems();
+  dom.recruitList.innerHTML = upcoming.length
+    ? ""
+    : `<p class="empty-note">${
+        recruitSource === "server" ? "未来两周没有待办的招聘事项。" : "暂无数据。"
+      }</p>`;
+  upcoming.forEach((item) => {
+    const row = document.createElement("article");
+    row.className = `recruit-row kind-${item.kind}`;
+    row.innerHTML = `
+      <div class="recruit-row-main task-content">
+        <div class="task-meta">
+          <span class="duration-pill recruit-pill">${escapeHtml(recruitTypeLabel(item))}</span>
+          <h3 class="task-title">${escapeHtml(Recruiting.describe(item))}</h3>
+          ${statusChip(item)}
+        </div>
+        <p class="task-description">${escapeHtml(recruitWhenText(item))}</p>
+        ${item.changeNote && item.status === "changed" ? `<p class="task-description">变更：${escapeHtml(item.changeNote)}</p>` : ""}
+        <p class="recruit-links">${recruitLinkHtml(item)}</p>
+      </div>
+      <div class="task-controls">${recruitActionButtons(item)}</div>
+    `;
+    bindRecruitActions(row, item);
+    dom.recruitList.appendChild(row);
+  });
+}
+
+async function patchRecruitItem(id, patch, message) {
+  try {
+    const response = await fetch(`/api/items/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    await loadRecruitData();
+    showToast(message);
+  } catch (error) {
+    showToast(`保存失败：${error.message}。请确认本地服务器在运行。`);
+  }
+}
+
+async function loadRecruitData() {
+  if (isDemoMode) {
+    recruitData = createDemoRecruitData();
+    recruitSource = "server";
+  } else {
+    try {
+      const response = await fetch("/api/items", { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      recruitData = await response.json();
+      recruitSource = "server";
+    } catch {
+      recruitSource = "offline";
+    }
+  }
+  applyRecruitChanges();
+}
+
+// 招聘事项变化后：重新排截止任务；今天的占用时段变了就重排均衡任务（完成记录保留）。
+function applyRecruitChanges() {
+  refreshRecruitSchedule();
+  if (recruitSource !== "server") {
+    // 读不到数据时不动今天的计划，免得把已经避让好的时间表冲掉。
+    render();
+    return;
+  }
+  const signature = JSON.stringify(todayBusyMinutes());
+  if (state.plan && state.busySignature !== undefined && state.busySignature !== signature) {
+    state.plan = buildPlan();
+    saveState();
+    showToast("招聘事项有变化，今日均衡任务已重新避让。");
+  } else if (state.plan && state.busySignature === undefined) {
+    state.busySignature = signature;
+    if (signature !== "[]") {
+      state.plan = buildPlan();
+    }
+    saveState();
+  }
+  render();
+  checkReminders();
+}
+
+function loadFiredReminders() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(FIRED_REMINDERS_KEY)) || []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveFiredReminders(keys) {
+  try {
+    localStorage.setItem(FIRED_REMINDERS_KEY, JSON.stringify([...keys].slice(-500)));
+  } catch {
+    // 存不下时最多重复提醒一次，不影响主流程。
+  }
+}
+
+function checkReminders() {
+  if (recruitSource !== "server" || isDemoMode) return;
+  const fired = loadFiredReminders();
+  const reminders = Recruiting.computeReminders(
+    recruitData.items || [],
+    recruitSchedule.placements,
+    recruitSchedule.unplaceable,
+    recruitSettings(),
+  );
+  const due = Recruiting.dueReminders(reminders, Date.now(), fired);
+  if (!due.length) return;
+  due.forEach((reminder) => {
+    notify(reminder.title, reminder.body, { tag: reminder.key, requireInteraction: true });
+    fired.add(reminder.key);
+  });
+  saveFiredReminders(fired);
+  showToast(due.length === 1 ? `${due[0].title}：${due[0].body}` : `有 ${due.length} 条招聘事项提醒，请查看。`);
+  playChime();
+}
+
+function createDemoRecruitData() {
+  const day = (offset, time) =>
+    `${Recruiting.addDays(dateKey, offset)}T${time}:00+08:00`;
+  return {
+    lastSyncedAt: day(0, "08:30"),
+    items: [
+      {
+        id: "demo-1",
+        kind: "appointment",
+        type: "一面",
+        status: "scheduled",
+        company: "示例科技",
+        title: "算法岗一面",
+        start: day(0, "15:00"),
+        durationMinutes: 60,
+        mode: "online",
+        link: "https://meeting.example.com",
+      },
+      {
+        id: "demo-2",
+        kind: "deadline",
+        type: "在线测评",
+        status: "scheduled",
+        company: "示例集团",
+        title: "性格与能力测评",
+        windowStart: day(0, "00:00"),
+        deadline: day(3, "23:59"),
+        estimatedMinutes: 60,
+      },
+      {
+        id: "demo-3",
+        kind: "appointment",
+        type: "二面",
+        status: "pending_confirmation",
+        company: "示例银行",
+        title: "管培生二面",
+        start: day(2, "10:00"),
+        durationMinutes: 45,
+        mode: "offline",
+        location: "上海市浦东新区",
+      },
+      {
+        id: "demo-4",
+        kind: "deadline",
+        type: "AI 面试",
+        status: "needs_review",
+        company: "示例咨询",
+        title: "AI 视频面试",
+        reviewNote: "邮件只写了“收到邮件后 72 小时内完成”，没有给出发送时间，请确认截止时间。",
+      },
+    ],
+  };
 }
 
 function escapeHtml(value) {
@@ -851,15 +1406,16 @@ function formatTimer(seconds) {
 }
 
 function updateProgress() {
-  const completed = ORDER.filter((key) => getTaskState(key).complete).length;
-  const percent = Math.round((completed / ORDER.length) * 100);
+  const plannedIds = state.plan.map((item) => item.id);
+  const completed = plannedIds.filter((key) => getTaskState(key).complete).length;
+  const percent = plannedIds.length ? Math.round((completed / plannedIds.length) * 100) : 0;
   const completedMinutes = state.plan
     .filter((item) => getTaskState(item.id).complete)
     .reduce((sum, item) => sum + item.duration, 0);
   const totalMinutes = state.plan.reduce((sum, item) => sum + item.duration, 0);
 
   dom.progressPercent.textContent = `${percent}%`;
-  dom.progressText.textContent = `${completed} / ${ORDER.length} 项`;
+  dom.progressText.textContent = `${completed} / ${plannedIds.length} 项`;
   dom.focusSummary.textContent = `已完成 ${formatDuration(completedMinutes)}，计划 ${formatDuration(totalMinutes)}`;
   dom.progressRing.style.background = `conic-gradient(var(--green) ${
     percent * 3.6
@@ -938,7 +1494,7 @@ async function requestNotifications() {
   }
 
   if (Notification.permission === "granted") {
-    showToast("到时提醒已经开启。请保持页面打开。");
+    showToast("到时提醒已经开启。工作台开着（可以最小化）就会弹出 Windows 通知。");
     return;
   }
 
@@ -961,9 +1517,13 @@ function updateNotificationButton() {
     Notification.permission === "granted" ? "到时提醒已开启" : "开启到时提醒";
 }
 
-function notify(title, body) {
+function notify(title, body, options = {}) {
   if ("Notification" in window && Notification.permission === "granted") {
-    new Notification(title, { body });
+    const notification = new Notification(title, { body, ...options });
+    notification.onclick = () => {
+      window.focus();
+      notification.close();
+    };
   }
 }
 
@@ -1018,6 +1578,7 @@ function initialize() {
   const settings = loadSettings();
   dom.totalMinutes.value = settings.totalMinutes;
   dom.startTime.value = settings.startTime;
+  dom.dayEnd.value = settings.dayEnd;
   dom.breakMinutes.value = settings.breakMinutes;
   dom.longBreakMinutes.value = settings.longBreakMinutes;
 
@@ -1032,6 +1593,10 @@ function initialize() {
   dom.reflection.value = state.reflection || "";
 
   dom.regenerateButton.addEventListener("click", regeneratePlan);
+  dom.syncButton.addEventListener("click", async () => {
+    await loadRecruitData();
+    showToast(recruitSource === "server" ? "已刷新招聘事项。" : "未连接本地服务器。");
+  });
   dom.notificationButton.addEventListener("click", requestNotifications);
   dom.resetButton.addEventListener("click", resetToday);
   dom.pauseButton.addEventListener("click", togglePause);
@@ -1044,6 +1609,12 @@ function initialize() {
 
   updateNotificationButton();
   render();
+  loadRecruitData();
+  window.setInterval(loadRecruitData, RECRUIT_POLL_MS);
+  window.setInterval(checkReminders, REMINDER_CHECK_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") loadRecruitData();
+  });
 }
 
 initialize();

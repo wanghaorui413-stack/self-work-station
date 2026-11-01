@@ -7,7 +7,7 @@ const directory = path.dirname(fileURLToPath(import.meta.url));
 const html = fs.readFileSync(path.join(directory, "index.html"), "utf8");
 const source = fs.readFileSync(path.join(directory, "app.js"), "utf8");
 
-for (const asset of ["styles.css", "app.js"]) {
+for (const asset of ["styles.css", "app.js", "recruiting.js", "manifest.webmanifest", "icon.svg"]) {
   if (!fs.existsSync(path.join(directory, asset))) {
     throw new Error(`缺少静态资源：${asset}`);
   }

@@ -14,6 +14,13 @@ daily-balance-planner/
 
 项目保持零依赖、静态部署和本地优先，方便通过 GitHub Pages 或直接打开文件演示。
 
+## V3 新增
+
+- `recruiting.js`：招聘事项的纯函数模块，负责占用时段、截止任务排位、均衡任务填空与挤占、提醒计算。测试在 `tests/recruiting.test.mjs`。
+- `scripts/serve.mjs`：静态服务之外，新增 `GET /api/items` 和 `PATCH /api/items/:id`。数据写在本机的 `data/items.json`，写入原子化、串行化，可改字段有白名单。
+- `scripts/windows/`：开机自启脚本。
+- 数据格式和合并规则见 `docs/recruiting-data.md`，架构决策见 `docs/adr/0001-*`。
+
 ## 主要模块
 
 虽然当前仍是单页静态项目，但 `app.js` 已按职责划分函数：
