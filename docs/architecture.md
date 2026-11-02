@@ -12,38 +12,65 @@ daily-balance-planner/
 └── docs/
 ```
 
-项目保持零依赖、静态部署和本地优先，方便通过 GitHub Pages 或直接打开文件演示。
+项目保持零依赖、本地优先。正式使用要通过本地服务器；GitHub Pages 上只能看 `?demo=1` 演示。
 
-## 主要模块
+## V3 新增
 
-虽然当前仍是单页静态项目，但 `app.js` 已按职责划分函数：
+- `recruiting.js`：招聘事项的纯函数模块，负责占用时段、截止任务排位、均衡任务填空与挤占、提醒计算。测试在 `tests/recruiting.test.mjs`。
+- `scripts/serve.mjs`：静态服务之外，新增 `GET /api/items` 和 `PATCH /api/items/:id`。数据写在本机的 `data/items.json`，写入原子化、串行化，可改字段有白名单。
+- `scripts/windows/`：开机自启脚本。
+- 数据格式和合并规则见 `docs/recruiting-data.md`，架构决策见 `docs/adr/0001-*`。
 
-- 任务模型：`TASK_TYPES`、`ORDER`、`CATEGORY_DEFINITIONS`
-- 时间分配：`allocateDurations`、`buildPlan`
-- 本地存储：`loadState`、`saveState`、`loadStateForDate`
-- 历史统计：`summarizeDay`、`buildAnalytics`、`buildInsights`
-- 页面渲染：`render`、`renderAnalytics`、`updateProgress`
-- 计时提醒：`startTimer`、`tickTimer`、`notify`
+## V4 第 1 段：投入方向可配置，数据迁到 data/
+
+原来的 `app.js` 拆成 `src/` 下的原生 ES module，不引入框架和构建步骤：
+
+| 文件 | 职责 |
+| --- | --- |
+| `src/focus-areas.js` | 投入方向的默认值、展开成当天时段、时间分配、挤占选择、校验。纯函数，浏览器和服务器共用。 |
+| `src/analytics.js` | 近 7 天统计和系统提醒。纯函数。 |
+| `src/format.js` | 日期、时长、HTML 转义。 |
+| `src/store.js` | 调用本地服务器的 `/api`；每日记录合并后再写；首次连接时迁移浏览器旧数据。 |
+| `src/recruit.js` | 招聘事项的展示、操作和提醒（计算在 `recruiting.js`）。 |
+| `src/focus-settings-view.js` | 投入方向编辑界面。 |
+| `src/main.js` | 入口：“今天”时间表、计时、设置。 |
+| `src/demo.js`、`src/ui.js` | 演示数据；页面提示、通知和提示音。 |
+
+`recruiting.js` 仍是普通脚本（测试用 `vm` 加载），先于模块加载，模块直接引用全局的 `Recruiting`。
+
+## V4 第 2 段：桌面外壳
+
+- `electron/main.mjs`：Electron 主进程。在本进程里直接启动 `scripts/serve.mjs` 的接口（固定端口 37800，被占用时随机），窗口加载它；关窗口缩到托盘；单实例；开机自启用 `app.setLoginItemSettings`。`--install` 生成 `build/icon.ico`、用 `shell.writeShortcutLink` 创建带 AppUserModelID 的快捷方式（Windows 通知需要），并删除旧版自启脚本。
+- `electron/preload.cjs`：给页面开放 `window.desktop`（开机自启、打开数据文件夹、唤出窗口）。页面在浏览器里打开时没有它，相关设置项自动隐藏。
+- 页面改成左侧导航 + 多视图（`#today`、`#focus`、`#recruit`、`#review`、`#settings` 等，用 hash 切换）。
+- `src/timeline.js`：今天页的时间轴，高度大致按时长比例，空档和“现在”线都画出来；时段默认收起，点开显示详情。
+- `npm run serve` 仍可只起 Node 服务器，在浏览器里看页面（演示、调试用）。
 
 ## 数据模型
 
-每日记录按日期存入 localStorage：
+所有用户数据都在本机 `data/`（见 ADR 0002）：
 
 ```text
-daily-balance:YYYY-MM-DD
+data/
+├── items.json          招聘事项（定时任务和工作台共写，见 recruiting-data.md）
+├── workbench.json      设置、投入方向、是否已从浏览器迁移
+└── days/YYYY-MM-DD.json  每日记录
 ```
 
-主要字段：
+接口：
 
-- `plan`：当天生成的计划。
-- `tasks`：每项任务的完成状态、小目标、计时记录。
+- `GET /api/workbench`，`PUT /api/workbench/settings`，`PUT /api/workbench/focus-areas`（不合法返回 400 和中文原因；已存在的方向只能归档，不能移除）
+- `GET /api/days?from=&to=`，`PUT /api/days/:date`
+- `POST /api/migrate`：一次性搬入 localStorage 旧记录，已有文件不覆盖，搬过一次不再搬
+
+每日记录的字段：
+
+- `plan`：当天的时段，每段有 `id`、`areaId`、`segment`、起止时间和时长。拆成多段的方向，时段 id 是 `方向id#段号`。
+- `tasks`：按时段 id 记录完成状态、小目标、计时。
 - `reflection`：每日复盘。
+- `crowdedOut`：当天被挤占的方向。
 
-设置单独存储：
-
-```text
-daily-balance:settings
-```
+V3 及以前的旧记录里，时段 id 是写死的任务 id（`research1`、`research2` 等），统计时由 `areaIdOf` 归到对应方向，旧记录不需要改写。
 
 ## 统计逻辑
 

@@ -1,20 +1,28 @@
 {
-  "name": "daily-balance-planner",
-  "version": "0.2.0",
+  "name": "self-work-station",
+  "version": "0.5.0",
   "private": false,
-  "description": "A local-first daily planning system for balancing IELTS preparation and research work.",
+  "description": "A local-first personal workbench: your own focus areas get balanced time every day, and recruiting emails become scheduled interviews and assessments.",
   "type": "module",
   "scripts": {
-    "test": "node --check app.js && node --check scripts/serve.mjs && node smoke-test.mjs",
-    "start": "node scripts/serve.mjs"
+    "start": "electron .",
+    "install-desktop": "electron . --install",
+    "serve": "node scripts/serve.mjs",
+    "test": "node --test \"tests/*.test.mjs\" && node smoke-test.mjs"
   },
   "keywords": [
     "planner",
     "local-first",
     "ielts",
     "productivity",
-    "portfolio"
+    "portfolio",
+    "recruiting",
+    "reminders"
   ],
   "author": "Haorui Wang",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "electron": "45.2.1"
+  },
+  "main": "electron/main.mjs"
 }
