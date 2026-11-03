@@ -1,6 +1,6 @@
 {
   "name": "self-work-station",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": false,
   "description": "A local-first personal workbench: your own focus areas get balanced time every day, and recruiting emails become scheduled interviews and assessments.",
   "type": "module",
@@ -8,7 +8,8 @@
     "start": "electron .",
     "install-desktop": "electron . --install",
     "serve": "node scripts/serve.mjs",
-    "test": "node --test \"tests/*.test.mjs\" && node smoke-test.mjs"
+    "test": "node --test \"tests/*.test.mjs\" && node smoke-test.mjs",
+    "eval:extract": "node scripts/eval-extract.mjs"
   },
   "keywords": [
     "planner",
@@ -22,6 +23,7 @@
   "author": "Haorui Wang",
   "license": "MIT",
   "dependencies": {
+    "@anthropic-ai/sdk": "1.3.0",
     "electron": "45.2.1"
   },
   "main": "electron/main.mjs"

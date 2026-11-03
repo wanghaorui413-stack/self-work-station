@@ -35,6 +35,27 @@ export function saveFocusAreas(focusAreas) {
   });
 }
 
+export async function loadTodos() {
+  return (await request("/api/todos")).todos;
+}
+
+export async function saveTodos(todos) {
+  return (await request("/api/todos", { method: "PUT", body: JSON.stringify({ todos }) })).todos;
+}
+
+// 手动新建固定日程或截止任务（写进 items.json，和邮件来的事项一起排程、提醒）。
+export function createItem(fields) {
+  return request("/api/items", { method: "POST", body: JSON.stringify(fields) });
+}
+
+export function updateItem(id, fields) {
+  return request(`/api/items/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(fields) });
+}
+
+export function deleteItem(id) {
+  return request(`/api/items/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 // 每日记录写得很频繁（输入小目标、计时），合并成一次请求再发。
 const pendingDays = new Map();
 let saveTimer = null;

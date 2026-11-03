@@ -8,6 +8,7 @@ import {
   areasActiveOn,
   chooseAreas,
   longBreakIndex,
+  pinsForDay,
   planEntries,
 } from "./focus-areas.js";
 import { buildAnalytics } from "./analytics.js";
@@ -17,6 +18,7 @@ import {
   formatDuration,
   formatTimer,
   historyDateKeys,
+  formatClock,
   timeToMinutes,
 } from "./format.js";
 import * as store from "./store.js";
@@ -28,6 +30,7 @@ import {
   freeMinutesToday,
   layoutFocusEntries,
   loadRecruitData,
+  deleteRecruitItem,
   pendingRecruitCount,
   recruit,
   recruitTimelineSummary,
@@ -38,6 +41,18 @@ import {
 } from "./recruit.js";
 import { renderFocusEditor } from "./focus-settings-view.js";
 import { positionNowLine, renderTimeline } from "./timeline.js";
+import {
+  configureTodos,
+  getTodos,
+  loadTodosData,
+  removeTodo,
+  renderTodayTodos,
+  renderTodosView,
+} from "./todos-view.js";
+import { todosForToday } from "./todos.js";
+import { configureCalendar, renderCalendar } from "./calendar-view.js";
+import { configureItemDialog, openEditDialog, openItemDialog } from "./item-dialog.js";
+import { configureExtract, renderExtractPanel } from "./extract-view.js";
 
 const dom = {
   todayLabel: document.querySelector("#todayLabel"),
@@ -72,6 +87,10 @@ const dom = {
   insightList: document.querySelector("#insightList"),
   focusEditor: document.querySelector("#focusEditor"),
   recruitBadge: document.querySelector("#recruitBadge"),
+  todoBadge: document.querySelector("#todoBadge"),
+  todayTodos: document.querySelector("#todayTodos"),
+  todosView: document.querySelector("#todosView"),
+  calendarView: document.querySelector("#calendarView"),
   saveSettingsButton: document.querySelector("#saveSettingsButton"),
   autostartRow: document.querySelector("#autostartRow"),
   autostartToggle: document.querySelector("#autostartToggle"),
@@ -173,27 +192,43 @@ function buildPlan() {
   const longBreakMinutes = Number(settings.longBreakMinutes);
   const areas = areasActiveOn(workbench.focusAreas, dateKey);
   const busy = todayBusyMinutes();
+  // 钉住的时段（方向的固定时段、今天手动改过的）先占位，其余时段绕开它们自动排。
+  const pins = pinsForDay(areas, state.pins);
+  const pinnedBlocks = Object.values(pins);
+  const pinnedMinutes = pinnedBlocks.reduce((sum, pin) => sum + pin.end - pin.start, 0);
+  const busyWithPins = [...busy, ...pinnedBlocks].sort((a, b) => a.start - b.start);
   const chosen = chooseAreas(areas, {
     totalMinutes: Number(settings.totalMinutes),
-    freeMinutes: freeMinutesToday(busy, settings),
+    freeMinutes: freeMinutesToday(busyWithPins, settings) + pinnedMinutes,
     breakMinutes,
     longBreakMinutes,
   });
-  const picked = chosen.total >= 10 ? chosen.areas : [];
-  const entries = planEntries(picked);
+  const chosenAreas = chosen.total >= 10 ? chosen.areas : [];
+  // 钉住的方向即使空档不够也保留（用户自己定的时间），但只保留钉住的那几段。
+  const pinnedAreaIds = new Set(Object.keys(pins).map((id) => id.split("#")[0]));
+  const picked = areas.filter((area) => chosenAreas.includes(area) || pinnedAreaIds.has(area.id));
+  const entries = planEntries(picked).filter(
+    (entry) => chosenAreas.some((area) => area.id === entry.areaId) || pins[entry.id],
+  );
   const meta = Object.fromEntries(entries.map((entry) => [entry.id, entry]));
-  const durations = picked.length ? allocateDurations(chosen.total, picked) : {};
+  const durations = picked.length ? allocateDurations(Math.max(chosen.total, pinnedMinutes), picked) : {};
+  const free = entries.filter((entry) => !pins[entry.id]);
 
-  const { plan, crowdedOut } = layoutFocusEntries({
-    order: entries.map((entry) => entry.id),
+  const layout = layoutFocusEntries({
+    order: free.map((entry) => entry.id),
     durations,
-    busy,
+    busy: busyWithPins,
     dayStart: timeToMinutes(settings.startTime),
     dayEnd: timeToMinutes(settings.dayEnd),
     breakMinutes,
-    longBreakAfter: entries[longBreakIndex(entries.length)]?.id ?? null,
+    longBreakAfter: free[longBreakIndex(free.length)]?.id ?? null,
     longBreakMinutes,
   });
+  const pinnedPlan = entries
+    .filter((entry) => pins[entry.id])
+    .map((entry) => ({ id: entry.id, ...pins[entry.id], duration: pins[entry.id].end - pins[entry.id].start, pinned: true }));
+  const plan = [...layout.plan, ...pinnedPlan].sort((a, b) => a.start - b.start);
+  const { crowdedOut } = layout;
 
   state.crowdedOut = [
     ...new Set([
@@ -269,7 +304,7 @@ function timelineEntries() {
       end: item.end,
       color: area.color,
       title: entryTitle(item),
-      meta: [formatDuration(item.duration), taskState.goal ? escapeHtml(taskState.goal) : ""]
+      meta: [formatDuration(item.duration), item.pinned ? "固定时间" : "", taskState.goal ? escapeHtml(taskState.goal) : ""]
         .filter(Boolean)
         .join(" · "),
       complete: taskState.complete,
@@ -327,6 +362,60 @@ function render() {
   renderRecruit();
   updateRecruitBadge();
   updateTimerPanel();
+  renderTodoViews();
+  renderCalendar(dom.calendarView);
+}
+
+function renderTodoViews() {
+  renderTodayTodos(dom.todayTodos);
+  renderTodosView(dom.todosView);
+  const count = todosForToday(getTodos(), dateKey).length;
+  dom.todoBadge.hidden = !count;
+  dom.todoBadge.textContent = count;
+}
+
+// 新建日程或截止任务后：重新读事项（会触发今天的计划避让）；从待办转来的，删掉原待办。
+async function onItemCreated(item, preset) {
+  if (preset?.fromTodoId) await removeTodo(preset.fromTodoId);
+  await loadRecruitData();
+}
+
+function scheduleTodo(todo) {
+  const due = todo.due ? (todo.due.length > 10 ? todo.due : `${todo.due}T23:00`) : "";
+  openItemDialog({
+    kind: "deadline",
+    title: todo.title,
+    deadline: due,
+    note: todo.note,
+    fromTodoId: todo.id,
+  });
+}
+
+function configureViews() {
+  configureTodos({
+    todayKey: dateKey,
+    canSave: connection === "server",
+    onChange: () => {
+      renderTodoViews();
+      renderCalendar(dom.calendarView);
+    },
+    onSchedule: scheduleTodo,
+  });
+  configureItemDialog({ canSave: connection === "server", onCreated: onItemCreated, onUpdated: loadRecruitData });
+  configureCalendar({
+    todayKey: dateKey,
+    getItems: () => recruit.data.items || [],
+    getPlacements: () => recruit.schedule.placements,
+    getTodos,
+    getDays: () => days,
+    getAreas: () => workbench.focusAreas,
+    getSettings: currentSettings,
+    renderItemDetail: renderRecruitTimelineCard,
+    onSlot: (start, end) => openItemDialog({ kind: "appointment", start, end }),
+    onEditItem: openEditDialog,
+    onDeleteItem: deleteRecruitItem,
+    onNewItem: (kind) => openItemDialog({ kind }),
+  });
 }
 
 function focusDetail(item) {
@@ -354,6 +443,14 @@ function focusDetail(item) {
     </div>
   `;
 
+  detail.querySelector(".task-controls").insertAdjacentHTML(
+    "beforeend",
+    '<button class="task-button" type="button" data-action="time">改时间</button>',
+  );
+  detail.querySelector('[data-action="time"]').addEventListener("click", () => {
+    if (!detail.querySelector(".pin-form")) detail.appendChild(pinForm(item));
+  });
+
   const goalInput = detail.querySelector(".micro-goal");
   goalInput.addEventListener("input", (event) => {
     getTaskState(item.id).goal = event.target.value;
@@ -371,6 +468,44 @@ function focusDetail(item) {
     });
   });
   return detail;
+}
+
+// 改投入方向时段的时间：只影响今天，其余时段绕开它重新排。
+function pinForm(item) {
+  const form = document.createElement("form");
+  form.className = "move-form pin-form";
+  const fromArea = item.pinned && !state.pins?.[item.id];
+  form.innerHTML = `
+    <label><span>开始</span><input name="start" type="time" required value="${formatClock(item.start)}" /></label>
+    <label><span>结束</span><input name="end" type="time" required value="${formatClock(item.end)}" /></label>
+    <button class="task-button complete" type="submit">保存</button>
+    ${state.pins?.[item.id] ? '<button class="task-button" type="button" data-auto>恢复自动安排</button>' : ""}
+    <p class="small-text">${
+      fromArea ? "这是方向设置里的固定时段，这里改的只对今天有效。" : "只改今天；其他时段会绕开它重新排。"
+    }</p>
+  `;
+  const apply = (pins, message) => {
+    state.pins = pins;
+    state.plan = buildPlan();
+    saveState();
+    render();
+    showToast(message);
+  };
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const start = timeToMinutes(form.elements.start.value);
+    const end = timeToMinutes(form.elements.end.value);
+    if (!(end > start)) {
+      showToast("结束时间要晚于开始时间。");
+      return;
+    }
+    apply({ ...state.pins, [item.id]: { start, end } }, "已改到指定时间，其余时段已重新安排。");
+  });
+  form.querySelector("[data-auto]")?.addEventListener("click", () => {
+    const { [item.id]: _removed, ...rest } = state.pins;
+    apply(rest, "已恢复自动安排。");
+  });
+  return form;
 }
 
 function updateRecruitBadge() {
@@ -734,6 +869,8 @@ async function initialize() {
   }).format(new Date());
 
   await loadData();
+  configureViews();
+  await loadTodosData(isDemoMode);
   state = { ...defaultState(), ...days[dateKey] };
   days[dateKey] = state;
   showConnectionBanner();
@@ -755,7 +892,15 @@ async function initialize() {
     isDemoMode,
     getSettings: currentSettings,
     onChange: onRecruitChange,
+    onEditItem: openEditDialog,
   });
+
+  configureExtract({
+    canSave: connection === "server",
+    isDemoMode,
+    onSaved: loadRecruitData,
+  });
+  renderExtractPanel(document.querySelector("#extractPanel"));
 
   dom.regenerateButton.addEventListener("click", () => regeneratePlan());
   dom.saveSettingsButton.addEventListener("click", () =>

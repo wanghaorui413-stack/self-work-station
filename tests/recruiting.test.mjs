@@ -220,3 +220,12 @@ test("当天被占用的分钟数按天切分", () => {
   assert.deepEqual(busy, [{ start: 13 * 60 + 30, end: 15 * 60 + 15 }]);
   assert.deepEqual(R.busyMinutesForDay("2026-11-06", items, {}, settings), []);
 });
+
+test("事项可以自带准备和缓冲时间（手动建的组会不需要提前半小时）", () => {
+  const block = R.blockedTime(
+    { id: "m", start: "2026-11-05T14:00:00+08:00", durationMinutes: 60, mode: "online", prepMinutes: 0, bufferMinutes: 0 },
+    settings,
+  );
+  assert.equal(clock(block.start), "2026-11-05T14:00");
+  assert.equal(clock(block.end), "2026-11-05T15:00");
+});

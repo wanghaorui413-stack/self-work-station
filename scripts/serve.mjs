@@ -3,6 +3,16 @@ import { readFile, writeFile, rename, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_FOCUS_AREAS, normalizeFocusAreas } from "../src/focus-areas.js";
+import { normalizeTodos } from "../src/todos.js";
+import {
+  MODEL,
+  ExtractUnavailable,
+  createClient,
+  extractFromEmail,
+  loadApiKey,
+  normalizeEmail,
+  normalizeExtractedItem,
+} from "./extract.mjs";
 
 // 以项目根目录为准，而不是启动时的工作目录，方便开机自启脚本从任意位置拉起。
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -10,6 +20,7 @@ export const dataDir = process.env.WORKBENCH_DATA_DIR || path.join(root, "data")
 const itemsFile = path.join(dataDir, "items.json");
 // 设置和投入方向；每日记录按天一个文件。见 docs/adr/0002。
 const workbenchFile = path.join(dataDir, "workbench.json");
+const todosFile = path.join(dataDir, "todos.json");
 const daysDir = path.join(dataDir, "days");
 const port = Number(process.env.PORT || 8000);
 
@@ -28,6 +39,7 @@ const DEFAULT_SETTINGS = {
 const USER_EDITABLE_FIELDS = [
   "status",
   "kind",
+  "type",
   "company",
   "title",
   "start",
@@ -42,6 +54,8 @@ const USER_EDITABLE_FIELDS = [
   "userNote",
   "link",
   "location",
+  "prepMinutes",
+  "bufferMinutes",
 ];
 
 const mimeTypes = {
@@ -95,13 +109,25 @@ function serialized(task) {
   return run;
 }
 
+// 用户自己建的（手动、粘贴解析）可以删；邮件同步来的只能取消，否则定时任务下次又会建回来。
+const DELETABLE_SOURCES = ["manual", "paste"];
+
 export function patchItem(id, patch, file = itemsFile) {
   return serialized(async () => {
     const data = await readItems(file);
     const item = data.items.find((entry) => entry.id === id);
     if (!item) return null;
-    for (const field of USER_EDITABLE_FIELDS) {
-      if (Object.hasOwn(patch, field)) item[field] = patch[field];
+    if (item.source === "manual" && Object.hasOwn(patch, "kind")) {
+      // 编辑手动事项时整条重新校验，避免存进不合法的时间；换类型时清掉另一类的字段。
+      const fields = validated(() => normalizeManualItem(patch));
+      for (const key of ["start", "durationMinutes", "mode", "travelMinutes", "deadline", "windowStart", "estimatedMinutes"]) {
+        delete item[key];
+      }
+      Object.assign(item, fields);
+    } else {
+      for (const field of USER_EDITABLE_FIELDS) {
+        if (Object.hasOwn(patch, field)) item[field] = patch[field];
+      }
     }
     const now = new Date().toISOString();
     item.userUpdatedAt = now;
@@ -109,6 +135,121 @@ export function patchItem(id, patch, file = itemsFile) {
     data.updatedAt = now;
     await writeJson(file, data);
     return item;
+  });
+}
+
+export function deleteItem(id, file = itemsFile) {
+  return serialized(async () => {
+    const data = await readItems(file);
+    const index = data.items.findIndex((entry) => entry.id === id);
+    if (index < 0) return null;
+    if (!DELETABLE_SOURCES.includes(data.items[index].source)) {
+      throw new BadRequest("邮件同步来的事项不能删除，请用“取消”。");
+    }
+    const [removed] = data.items.splice(index, 1);
+    data.updatedAt = new Date().toISOString();
+    await writeJson(file, data);
+    return removed;
+  });
+}
+
+// ---------- 手动建的事项 ----------
+
+// 用户自己建的固定日程和截止任务，和邮件来的放在同一个 items.json 里，
+// 排程和提醒规则完全一样；用 source: "manual" 区分，定时任务不会改动它们。
+export function normalizeManualItem(raw) {
+  const text = (value, max) => (typeof value === "string" ? value.trim().slice(0, max) : "");
+  const time = (value, label) => {
+    if (!value || !Number.isFinite(Date.parse(value))) throw new Error(`请填写${label}`);
+    return String(value);
+  };
+  const minutes = (value, fallback, label) => {
+    const number = Math.round(Number(value ?? fallback));
+    if (!(number >= 0 && number <= 24 * 60)) throw new Error(`${label}要在 0-1440 分钟之间`);
+    return number;
+  };
+
+  const kind = raw?.kind;
+  if (kind !== "appointment" && kind !== "deadline") throw new Error("事项类型只能是固定日程或截止任务");
+  const title = text(raw.title, 60);
+  if (!title) throw new Error("请填写事项名称");
+  const item = {
+    kind,
+    title,
+    type: text(raw.type, 20) || (kind === "appointment" ? "日程" : "截止任务"),
+    link: text(raw.link, 500) || null,
+    location: text(raw.location, 200) || null,
+    userNote: text(raw.userNote, 1000) || null,
+  };
+  if (kind === "appointment") {
+    item.start = time(raw.start, "开始时间");
+    item.durationMinutes = Math.max(5, minutes(raw.durationMinutes, 60, "时长"));
+    item.mode = raw.mode === "offline" ? "offline" : "online";
+    item.travelMinutes = raw.travelMinutes == null ? null : minutes(raw.travelMinutes, 60, "往返交通");
+    item.prepMinutes = minutes(raw.prepMinutes, 0, "提前准备");
+    item.bufferMinutes = minutes(raw.bufferMinutes, 0, "结束后缓冲");
+  } else {
+    item.deadline = time(raw.deadline, "截止时间");
+    item.windowStart = raw.windowStart ? time(raw.windowStart, "最早开始时间") : null;
+    item.estimatedMinutes = Math.max(5, minutes(raw.estimatedMinutes, 60, "预计用时"));
+  }
+  return item;
+}
+
+export function createManualItem(fields, file = itemsFile) {
+  return serialized(async () => {
+    const data = await readItems(file);
+    const now = new Date().toISOString();
+    const item = {
+      id: `m-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      source: "manual",
+      status: "scheduled",
+      ...fields,
+      createdAt: now,
+      updatedAt: now,
+      userUpdatedAt: now,
+    };
+    data.items.push(item);
+    data.updatedAt = now;
+    await writeJson(file, data);
+    return item;
+  });
+}
+
+// 粘贴邮件、经大模型解析并由用户确认的招聘事项。用 source: "paste" 标记，
+// 和邮件同步来的一样算招聘事项，但定时任务不会改动它们（见 docs/recruiting-data.md）。
+export function createExtractedItems(items, email, model, file = itemsFile) {
+  return serialized(async () => {
+    const data = await readItems(file);
+    const now = new Date().toISOString();
+    const created = items.map((fields) => ({
+      id: `p-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      source: "paste",
+      ...fields,
+      extractedBy: model || null,
+      sourceEmails: [{ subject: email?.subject || "", receivedAt: email?.receivedAt || now }],
+      createdAt: now,
+      updatedAt: now,
+      userUpdatedAt: now,
+    }));
+    data.items.push(...created);
+    data.updatedAt = now;
+    await writeJson(file, data);
+    return created;
+  });
+}
+
+// ---------- 待办 ----------
+
+export async function readTodos() {
+  return { version: 1, todos: [], updatedAt: null, ...(await readJson(todosFile)) };
+}
+
+function writeTodos(todos) {
+  return serialized(async () => {
+    const data = { version: 1, todos, updatedAt: new Date().toISOString() };
+    await writeJson(todosFile, data);
+    return data;
   });
 }
 
@@ -171,8 +312,21 @@ function normalizeDay(input) {
     tasks: input.tasks && typeof input.tasks === "object" ? input.tasks : {},
     reflection: typeof input.reflection === "string" ? input.reflection.slice(0, 5000) : "",
     crowdedOut: Array.isArray(input.crowdedOut) ? input.crowdedOut : [],
+    pins: normalizePins(input.pins),
     ...(typeof input.busySignature === "string" ? { busySignature: input.busySignature } : {}),
   };
+}
+
+// 当天手动指定的投入方向时段：{ 时段 id: { start, end } }，单位是当天的分钟数。
+function normalizePins(input) {
+  const pins = {};
+  if (!input || typeof input !== "object") return pins;
+  for (const [id, pin] of Object.entries(input).slice(0, 40)) {
+    const start = Math.round(Number(pin?.start));
+    const end = Math.round(Number(pin?.end));
+    if (id.length <= 60 && start >= 0 && end > start && end <= 24 * 60) pins[id] = { start, end };
+  }
+  return pins;
 }
 
 function* dateRange(from, to) {
@@ -278,7 +432,7 @@ function isAllowedOrigin(request) {
   return !origin || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
 }
 
-async function handleApi(request, response, pathname, searchParams) {
+async function handleApi(request, response, pathname, searchParams, options) {
   if (request.method !== "GET" && !isAllowedOrigin(request)) {
     sendJson(response, 403, { error: "forbidden origin" });
     return;
@@ -286,6 +440,55 @@ async function handleApi(request, response, pathname, searchParams) {
 
   if (pathname === "/api/items" && request.method === "GET") {
     sendJson(response, 200, await readItems());
+    return;
+  }
+
+  if (pathname === "/api/items" && request.method === "POST") {
+    const body = await readBody(request);
+    sendJson(response, 201, await createManualItem(validated(() => normalizeManualItem(body))));
+    return;
+  }
+
+  if (pathname === "/api/extract/status" && request.method === "GET") {
+    sendJson(response, 200, { configured: Boolean(await loadApiKey(dataDir)), model: MODEL });
+    return;
+  }
+
+  if (pathname === "/api/extract" && request.method === "POST") {
+    const raw = await readBody(request, 256 * 1024);
+    const email = validated(() => normalizeEmail(raw));
+    const client = options.extractClient || (await defaultExtractClient());
+    if (!client) {
+      sendJson(response, 503, { error: "还没有配置 Anthropic API 密钥，见 README“邮件解析”一节。", configured: false });
+      return;
+    }
+    try {
+      sendJson(response, 200, await extractFromEmail(email, client));
+    } catch (error) {
+      if (!(error instanceof ExtractUnavailable)) throw error;
+      sendJson(response, 502, { error: error.message });
+    }
+    return;
+  }
+
+  if (pathname === "/api/items/extracted" && request.method === "POST") {
+    const body = await readBody(request, 256 * 1024);
+    const items = validated(() => {
+      if (!Array.isArray(body.items) || !body.items.length) throw new Error("没有要保存的事项");
+      return body.items.slice(0, 10).map(normalizeExtractedItem);
+    });
+    sendJson(response, 201, { items: await createExtractedItems(items, body.email, body.model) });
+    return;
+  }
+
+  if (pathname === "/api/todos" && request.method === "GET") {
+    sendJson(response, 200, await readTodos());
+    return;
+  }
+
+  if (pathname === "/api/todos" && request.method === "PUT") {
+    const body = await readBody(request, 1024 * 1024);
+    sendJson(response, 200, await writeTodos(validated(() => normalizeTodos(body.todos))));
     return;
   }
 
@@ -337,6 +540,11 @@ async function handleApi(request, response, pathname, searchParams) {
   }
 
   const match = pathname.match(/^\/api\/items\/([^/]+)$/);
+  if (match && request.method === "DELETE") {
+    const removed = await deleteItem(decodeURIComponent(match[1]));
+    sendJson(response, removed ? 200 : 404, removed ? { ok: true } : { error: "item not found" });
+    return;
+  }
   if (match && request.method === "PATCH") {
     const item = await patchItem(decodeURIComponent(match[1]), await readBody(request));
     if (!item) {
@@ -350,12 +558,18 @@ async function handleApi(request, response, pathname, searchParams) {
   sendJson(response, 404, { error: "not found" });
 }
 
-export function createWorkbenchServer() {
+async function defaultExtractClient() {
+  const apiKey = await loadApiKey(dataDir);
+  return apiKey ? createClient(apiKey) : null;
+}
+
+// options.extractClient：测试时传入假的模型客户端，不走真实 API。
+export function createWorkbenchServer(options = {}) {
   return createServer(async (request, response) => {
     const { pathname, searchParams } = new URL(request.url || "/", "http://localhost");
     try {
       if (pathname.startsWith("/api/")) {
-        await handleApi(request, response, pathname, searchParams);
+        await handleApi(request, response, pathname, searchParams, options);
         return;
       }
 

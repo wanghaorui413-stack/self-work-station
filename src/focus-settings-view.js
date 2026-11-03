@@ -75,6 +75,13 @@ function areaCard(area, index, activeCount) {
           <span>空档不够时优先保留</span>
         </label>
       </div>
+      <div class="focus-fixed">
+        <span class="focus-days-label">固定时段</span>
+        <input type="time" data-field="fixedStart" value="${area.fixedTime?.start || ""}" aria-label="固定开始时间" />
+        <span>–</span>
+        <input type="time" data-field="fixedEnd" value="${area.fixedTime?.end || ""}" aria-label="固定结束时间" />
+        <span class="small-text">可不填，不填就自动排${area.segments > 1 ? "；只固定第 1 段" : ""}。今天临时改时间在“今天”页点开时段</span>
+      </div>
       <div class="focus-days" role="group" aria-label="生效日">
         <span class="focus-days-label">哪几天排</span>${dayChips}
       </div>
@@ -142,6 +149,10 @@ function updateField(area, input, card) {
     const checked = [...card.querySelectorAll('[data-field="day"]:checked')].map((box) => Number(box.value));
     // 全选和全不选都当作“每天”。
     area.days = checked.length === 7 ? [] : checked;
+  } else if (field === "fixedStart" || field === "fixedEnd") {
+    const start = card.querySelector('[data-field="fixedStart"]').value;
+    const end = card.querySelector('[data-field="fixedEnd"]').value;
+    area.fixedTime = start || end ? { start, end } : null;
   } else if (field === "keepWhenCrowded") {
     area.keepWhenCrowded = input.checked;
   } else if (["minimum", "weight", "segments"].includes(field)) {

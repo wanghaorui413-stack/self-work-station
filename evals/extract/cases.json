@@ -1,0 +1,102 @@
+{
+  "_note": "邮件解析评估集。下面是按常见格式编写的示例邮件，不是真实邮件；用自己的真实邮件补充时，先删掉姓名、电话等个人信息。expected.items 只写需要比对的字段，时间一律写成带 +08:00 的完整时间。",
+  "cases": [
+    {
+      "id": "exact-online-interview",
+      "email": {
+        "subject": "【星河数据】数据分析师一面邀请",
+        "receivedAt": "2026-11-02T10:12:00+08:00",
+        "body": "王同学您好：\n感谢投递星河数据 2027 届数据分析师岗位。诚邀您参加一面，安排如下：\n时间：2026年11月6日（周五）15:00-16:00\n形式：腾讯会议，会议号 123-456-789，链接 https://meeting.tencent.com/dm/xyz123\n请于收到邮件后回复确认是否参加。"
+      },
+      "expected": {
+        "isRecruiting": true,
+        "items": [
+          { "kind": "appointment", "start": "2026-11-06T15:00:00+08:00", "durationMinutes": 60, "mode": "online", "status": "pending_confirmation" }
+        ]
+      }
+    },
+    {
+      "id": "relative-deadline-assessment",
+      "email": {
+        "subject": "北辰科技 | 在线测评通知",
+        "receivedAt": "2026-11-03T09:00:00+08:00",
+        "body": "同学你好，你已进入北辰科技校招测评环节。请在收到本邮件后 72 小时内完成在线测评，测评时长约 50 分钟，测评链接：https://assess.example.com/t/abc 。逾期链接将失效。"
+      },
+      "expected": {
+        "isRecruiting": true,
+        "items": [
+          { "kind": "deadline", "deadline": "2026-11-06T09:00:00+08:00", "estimatedMinutes": 50, "status": "scheduled" }
+        ]
+      }
+    },
+    {
+      "id": "vague-next-week",
+      "email": {
+        "subject": "关于后续面试安排",
+        "receivedAt": "2026-11-03T14:30:00+08:00",
+        "body": "您好，恭喜通过简历筛选。我们会在下周安排业务面试，具体时间另行通知，请保持电话畅通。"
+      },
+      "expected": {
+        "isRecruiting": true,
+        "items": [{ "kind": "appointment", "status": "needs_review" }]
+      }
+    },
+    {
+      "id": "two-items-one-email",
+      "email": {
+        "subject": "远山咨询：笔试与群面安排",
+        "receivedAt": "2026-11-01T20:00:00+08:00",
+        "body": "同学好！请于 11月4日 23:59 前完成线上笔试（约 90 分钟），链接 https://exam.example.com/ys 。\n另外，群面定于 11月8日 上午 10:00 在上海市静安区南京西路 1000 号 18 楼进行，时长约 2 小时，请准时到场。"
+      },
+      "expected": {
+        "isRecruiting": true,
+        "items": [
+          { "kind": "deadline", "deadline": "2026-11-04T23:59:00+08:00", "estimatedMinutes": 90, "status": "scheduled" },
+          { "kind": "appointment", "start": "2026-11-08T10:00:00+08:00", "durationMinutes": 120, "mode": "offline", "status": "scheduled" }
+        ]
+      }
+    },
+    {
+      "id": "job-digest-not-recruiting",
+      "email": {
+        "subject": "本周为你推荐 12 个数据岗位",
+        "receivedAt": "2026-11-02T08:00:00+08:00",
+        "body": "根据你的求职意向，我们为你精选了以下岗位：数据分析师（某银行）、商业分析（某电商）……点击查看详情，投递截止 11月30日。"
+      },
+      "expected": { "isRecruiting": false, "items": [] }
+    },
+    {
+      "id": "ai-interview-no-duration",
+      "email": {
+        "subject": "【云帆】AI 面试邀请",
+        "receivedAt": "2026-11-02T16:45:00+08:00",
+        "body": "你好，请在 2026-11-05 18:00 之前完成 AI 视频面试，可在截止前任意时间作答。入口：https://ai-interview.example.com/yf/888"
+      },
+      "expected": {
+        "isRecruiting": true,
+        "items": [{ "kind": "deadline", "deadline": "2026-11-05T18:00:00+08:00", "estimatedMinutes": 45, "status": "scheduled" }]
+      }
+    },
+    {
+      "id": "year-boundary",
+      "email": {
+        "subject": "终面时间确认",
+        "receivedAt": "2026-12-28T11:00:00+08:00",
+        "body": "您好，终面安排在 1月4日 14:30，线上进行，预计 45 分钟。会议链接稍后发送。"
+      },
+      "expected": {
+        "isRecruiting": true,
+        "items": [{ "kind": "appointment", "start": "2027-01-04T14:30:00+08:00", "durationMinutes": 45, "mode": "online", "status": "scheduled" }]
+      }
+    },
+    {
+      "id": "application-receipt",
+      "email": {
+        "subject": "投递成功通知",
+        "receivedAt": "2026-11-01T12:00:00+08:00",
+        "body": "你已成功投递「数据分析实习生」岗位，HR 会在 5 个工作日内处理你的简历，请耐心等待。"
+      },
+      "expected": { "isRecruiting": false, "items": [] }
+    }
+  ]
+}

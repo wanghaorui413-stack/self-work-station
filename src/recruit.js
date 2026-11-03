@@ -2,6 +2,7 @@
 // 排程和提醒的计算在 recruiting.js（全局 Recruiting），这里只管页面。
 
 import { escapeHtml, formatClock } from "./format.js";
+import * as store from "./store.js";
 import { notify, playChime, showToast } from "./ui.js";
 
 /* global Recruiting -- 由 index.html 先加载的 recruiting.js 声明（普通脚本，不挂在 globalThis 上） */
@@ -31,6 +32,7 @@ let context = {
   isDemoMode: false,
   getSettings: () => ({}),
   onChange: () => {},
+  onEditItem: () => {},
 };
 
 export function configureRecruit(options) {
@@ -127,7 +129,7 @@ export function renderRecruitTimelineCard(entry) {
   const { item } = entry;
   const card = document.createElement("article");
   card.className = "task-card recruit-card";
-  card.style.setProperty("--task-color", item.kind === "appointment" ? "#c0503a" : "#3f6fb0");
+  card.style.setProperty("--task-color", recruitTimelineSummary(entry).color);
   const detail =
     item.kind === "appointment"
       ? `占用 ${Recruiting.formatClock(entry.block.start)}-${Recruiting.formatClock(entry.block.end)}（含准备与缓冲）`
@@ -156,7 +158,8 @@ export function recruitTimelineSummary(entry) {
   return {
     title: Recruiting.describe(item),
     badge: RECRUIT_TYPE_ICONS[item.kind] || "招",
-    color: item.kind === "appointment" ? "#c0503a" : "#3f6fb0",
+    // 手动建的日程用中性的灰蓝，和招聘事项区分开。
+    color: item.source === "manual" ? "#5b6b8c" : item.kind === "appointment" ? "#c0503a" : "#3f6fb0",
     meta: `<span class="duration-pill recruit-pill">${escapeHtml(recruitTypeLabel(item))}</span>${
       item.status === "scheduled" ? "" : statusChip(item)
     }`,
@@ -192,10 +195,31 @@ function recruitActionButtons(item) {
   if (item.kind === "appointment" && Recruiting.BLOCKING_STATUSES.includes(item.status)) {
     buttons.push('<button class="task-button" type="button" data-recruit="done">已结束</button>');
   }
-  if (Recruiting.isOpen(item)) {
+  if (item.source === "manual") {
+    buttons.push('<button class="task-button" type="button" data-recruit="edit">编辑</button>');
+  }
+  if (isDeletable(item)) {
+    buttons.push('<button class="task-button quiet" type="button" data-recruit="delete">删除</button>');
+  } else if (Recruiting.isOpen(item)) {
     buttons.push('<button class="task-button quiet" type="button" data-recruit="cancel">取消</button>');
   }
   return buttons.join("");
+}
+
+// 自己建的（手动、粘贴解析）可以删；邮件同步来的只能取消，否则下次同步又会建回来。
+export function isDeletable(item) {
+  return item.source === "manual" || item.source === "paste";
+}
+
+export async function deleteRecruitItem(item) {
+  if (!window.confirm(`确定删除「${Recruiting.describe(item)}」吗？删除后不能恢复。`)) return;
+  try {
+    await store.deleteItem(item.id);
+    await loadRecruitData();
+    showToast("已删除。");
+  } catch (error) {
+    showToast(`没有删除：${error.message}`);
+  }
 }
 
 function bindRecruitActions(container, item) {
@@ -224,6 +248,8 @@ async function handleRecruitAction(item, action, container) {
       `${Recruiting.describe(item)} 已完成。`,
     );
   }
+  if (action === "delete") await deleteRecruitItem(item);
+  if (action === "edit") context.onEditItem(item);
   if (action === "cancel") {
     if (!window.confirm(`确定把「${Recruiting.describe(item)}」标为已取消吗？`)) return;
     await patchRecruitItem(item.id, { status: "cancelled" }, "已取消，并从日程中移除。");
@@ -315,7 +341,7 @@ function upcomingRecruitItems() {
     return recruit.schedule.placements[item.id]?.start ?? Recruiting.parseTime(item.deadline) ?? Infinity;
   };
   return (recruit.data.items || [])
-    .filter((item) => Recruiting.BLOCKING_STATUSES.includes(item.status))
+    .filter((item) => item.source !== "manual" && Recruiting.BLOCKING_STATUSES.includes(item.status))
     .filter((item) => {
       const end =
         item.kind === "appointment"

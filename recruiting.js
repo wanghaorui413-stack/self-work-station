@@ -129,10 +129,13 @@ const Recruiting = (() => {
       item.mode === "offline"
         ? Number(item.travelMinutes ?? s.defaultTravelMinutes) || 0
         : 0;
+    // 手动建的日程可以自带准备和缓冲时间（例如组会不需要提前半小时准备）。
+    const prep = Number(item.prepMinutes ?? s.prepMinutes) || 0;
+    const buffer = Number(item.bufferMinutes ?? s.bufferMinutes) || 0;
     return {
       itemId: item.id,
-      start: start - (s.prepMinutes + travel) * MINUTE,
-      end: start + (duration + s.bufferMinutes + travel) * MINUTE,
+      start: start - (prep + travel) * MINUTE,
+      end: start + (duration + buffer + travel) * MINUTE,
       eventStart: start,
       eventEnd: start + duration * MINUTE,
     };

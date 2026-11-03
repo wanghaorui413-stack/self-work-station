@@ -21,8 +21,8 @@
         </div>
         <nav class="nav" aria-label="视图">
           <a href="#today" data-nav="today"><span class="nav-icon" aria-hidden="true">◐</span>今天</a>
-          <a href="#calendar" data-nav="calendar"><span class="nav-icon" aria-hidden="true">▦</span>日历<span class="nav-soon">即将</span></a>
-          <a href="#todos" data-nav="todos"><span class="nav-icon" aria-hidden="true">☐</span>待办<span class="nav-soon">即将</span></a>
+          <a href="#calendar" data-nav="calendar"><span class="nav-icon" aria-hidden="true">▦</span>日历</a>
+          <a href="#todos" data-nav="todos"><span class="nav-icon" aria-hidden="true">☐</span>待办<span id="todoBadge" class="nav-badge is-quiet" hidden></span></a>
           <a href="#focus" data-nav="focus"><span class="nav-icon" aria-hidden="true">◎</span>投入方向</a>
           <a href="#recruit" data-nav="recruit"><span class="nav-icon" aria-hidden="true">✉</span>招聘<span id="recruitBadge" class="nav-badge" hidden></span></a>
           <a href="#review" data-nav="review"><span class="nav-icon" aria-hidden="true">↗</span>复盘</a>
@@ -81,6 +81,8 @@
                 </div>
               </section>
 
+              <section class="card today-todos" id="todayTodos" aria-label="今天的待办"></section>
+
               <details class="card side-card" open>
                 <summary>今天为什么这样排</summary>
                 <ul id="planRationale" class="insight-list"></ul>
@@ -94,10 +96,10 @@
           <header class="view-header">
             <div>
               <h1 id="calendarTitle">日历</h1>
-              <p class="view-subtitle">周视图会在后面的版本上线</p>
+              <p class="view-subtitle">固定日程、已排定的截止任务和有截止日期的待办；投入方向只显示今天和过去几天</p>
             </div>
           </header>
-          <p class="empty-note">这里会按周显示固定日程、已排定的截止任务和有截止时间的待办。</p>
+          <div id="calendarView"></div>
         </section>
 
         <!-- 待办 -->
@@ -105,10 +107,10 @@
           <header class="view-header">
             <div>
               <h1 id="todosTitle">待办</h1>
-              <p class="view-subtitle">下一个版本上线</p>
+              <p class="view-subtitle">做了就勾掉的一次性事项。点 ☆ 加进今天；要占一段时间去做的，点“排进日程”变成截止任务。</p>
             </div>
           </header>
-          <p class="empty-note">这里会列出你自己建的待办，可以标记“今天做”，也可以手动建固定日程和截止任务。</p>
+          <div id="todosView"></div>
         </section>
 
         <!-- 投入方向 -->
@@ -136,6 +138,10 @@
               <button id="syncButton" class="secondary-button" type="button">立即刷新</button>
             </div>
           </header>
+          <details class="card extract-panel">
+            <summary>粘贴邮件，用大模型解析</summary>
+            <div id="extractPanel"></div>
+          </details>
           <div id="recruitAlerts" class="recruit-alerts"></div>
           <h2 class="section-title">未来两周</h2>
           <div id="recruitList" class="recruit-list"></div>
@@ -277,6 +283,43 @@
         </section>
       </main>
     </div>
+
+    <dialog id="itemDialog" class="item-dialog" aria-labelledby="itemDialogTitle">
+      <form id="itemForm" method="dialog">
+        <h2 id="itemDialogTitle">新建</h2>
+        <div class="kind-switch" data-new-only role="radiogroup" aria-label="类型">
+          <label><input type="radio" name="kind" value="appointment" checked /><span>固定日程</span></label>
+          <label><input type="radio" name="kind" value="deadline" /><span>截止任务</span></label>
+        </div>
+        <p class="small-text" data-kind="appointment">时间已经定好的事，例如组会、和导师的约见。</p>
+        <p class="small-text" data-kind="deadline" hidden>只有截止时间、要占一段时间去做的事，工作台会自动排进截止前的空档。</p>
+        <label><span>名称</span><input name="title" type="text" maxlength="60" required /></label>
+        <div class="form-grid" data-kind="appointment">
+          <label><span>开始时间</span><input name="start" type="datetime-local" /></label>
+          <label><span>结束时间</span><input name="end" type="time" /></label>
+          <label><span>形式</span>
+            <select name="mode"><option value="online">线上</option><option value="offline">线下（加往返交通）</option></select>
+          </label>
+          <label><span>提前准备（分钟）</span><input name="prepMinutes" type="number" min="0" step="5" value="0" /></label>
+          <label><span>结束后缓冲（分钟）</span><input name="bufferMinutes" type="number" min="0" step="5" value="0" /></label>
+        </div>
+        <div class="form-grid" data-kind="deadline" hidden>
+          <label><span>截止时间</span><input name="deadline" type="datetime-local" /></label>
+          <label><span>预计用时（分钟）</span><input name="estimatedMinutes" type="number" min="5" step="5" value="60" /></label>
+          <label><span>最早开始（可不填）</span><input name="windowStart" type="datetime-local" /></label>
+        </div>
+        <div class="form-grid">
+          <label><span>地点（可不填）</span><input name="location" type="text" maxlength="200" /></label>
+          <label><span>链接（可不填）</span><input name="link" type="url" maxlength="500" /></label>
+        </div>
+        <label><span>备注（可不填）</span><textarea name="userNote" rows="2" maxlength="1000"></textarea></label>
+        <p id="itemFormError" class="form-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="button" data-cancel>取消</button>
+          <button class="primary-button" type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
 

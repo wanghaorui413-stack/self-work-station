@@ -8,6 +8,7 @@ import {
   chooseAreas,
   longBreakIndex,
   normalizeFocusAreas,
+  pinsForDay,
   planEntries,
 } from "../src/focus-areas.js";
 import { buildAnalytics } from "../src/analytics.js";
@@ -174,4 +175,28 @@ test("归档的方向只在历史里出现过时才进统计", () => {
 
 test("历史日期从今天往前数", () => {
   assert.deepEqual(historyDateKeys("2026-03-01", 3), ["2026-03-01", "2026-02-28", "2026-02-27"]);
+});
+
+test("固定时段套在方向的第 1 段上；当天改过的时间优先；没排的方向不算", () => {
+  const areas = normalizeFocusAreas([
+    { ...DEFAULT_FOCUS_AREAS[0], fixedTime: { start: "08:00", end: "08:30" } },
+    { ...DEFAULT_FOCUS_AREAS[1] },
+  ]);
+  assert.deepEqual(pinsForDay(areas, {}), { vocabulary: { start: 480, end: 510 } });
+  const pins = pinsForDay(areas, {
+    vocabulary: { start: 600, end: 630 },
+    "research#2": { start: 900, end: 960 },
+    listening: { start: 700, end: 720 },
+  });
+  assert.deepEqual(pins, {
+    vocabulary: { start: 600, end: 630 },
+    "research#2": { start: 900, end: 960 },
+  });
+});
+
+test("固定时段要同时填开始和结束，且结束晚于开始", () => {
+  const area = { ...DEFAULT_FOCUS_AREAS[0] };
+  assert.throws(() => normalizeFocusAreas([{ ...area, fixedTime: { start: "09:00", end: "" } }]), /固定时段/);
+  assert.throws(() => normalizeFocusAreas([{ ...area, fixedTime: { start: "10:00", end: "09:00" } }]), /固定时段/);
+  assert.equal(normalizeFocusAreas([{ ...area, fixedTime: null }])[0].fixedTime, null);
 });

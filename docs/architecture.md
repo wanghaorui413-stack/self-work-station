@@ -46,6 +46,24 @@ daily-balance-planner/
 - `src/timeline.js`：今天页的时间轴，高度大致按时长比例，空档和“现在”线都画出来；时段默认收起，点开显示详情。
 - `npm run serve` 仍可只起 Node 服务器，在浏览器里看页面（演示、调试用）。
 
+## V4 第 3、4 段：待办、手动事项、日历
+
+- `src/todos.js`（纯函数，前后端共用）：待办的分组、“今天做”、校验。`src/todos-view.js`：待办页和今天页的待办卡片。数据在 `data/todos.json`，`GET/PUT /api/todos` 整体读写。
+- 手动新建的固定日程、截止任务走 `POST /api/items`，和邮件来的事项存在同一个 `items.json`，用 `source: "manual"` 区分，复用同一套排程和提醒。弹窗在 `src/item-dialog.js`；待办“排进日程”就是带上标题和截止时间打开这个弹窗，保存后删掉原待办。
+- `src/calendar-view.js`：周视图。未来只画时间已确定的东西；投入方向的时段只画今天和过去有记录的日子；点空白处按半小时取整新建日程。
+
+## 手动调整时间
+
+- 手动日程：日历上拖选时段新建（`bindSlotSelection`，按 15 分钟取整）；弹窗用开始 + 结束时间，存的时候换算成时长。自己建的事项（`source` 为 `manual` 或 `paste`）可以 `DELETE /api/items/:id`；邮件同步来的只能取消，否则下次同步会建回来。手动事项的 PATCH 带 `kind` 时整条重新校验。
+- 投入方向：方向的 `fixedTime: { start, end }`（"HH:MM"）和每日记录里的 `pins: { 时段 id: { start, end } }`（当天分钟数）由 `pinsForDay` 合并，当天的优先。`buildPlan` 先把钉住的时段当作占用，其余时段照常分配、绕开它们排。
+
+## V4 第 8 段：大模型解析邮件（ADR 0004）
+
+- `scripts/extract.mjs`：提示词、JSON Schema、调用 Claude API、规则校验（`validateExtraction`）。模型客户端可以注入，测试里换成假的。
+- `POST /api/extract` 只返回候选；`POST /api/items/extracted` 保存用户确认的事项（`source: "paste"`，id 以 `p-` 开头）。`GET /api/extract/status` 告诉页面密钥配没配。
+- `src/extract-view.js`：招聘页的粘贴、预览、勾选、保存。
+- `scripts/eval-extract.mjs` + `evals/extract/cases.json`：用真实模型跑标注邮件，按字段统计准确率。
+
 ## 数据模型
 
 所有用户数据都在本机 `data/`（见 ADR 0002）：

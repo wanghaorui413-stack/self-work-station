@@ -19,7 +19,7 @@ for (const asset of ["styles.css", "recruiting.js", "src/main.js", "manifest.web
   }
 }
 
-for (const file of ["recruiting.js", "scripts/serve.mjs", "electron/main.mjs", "electron/preload.cjs", ...sourceFiles]) {
+for (const file of ["recruiting.js", "scripts/serve.mjs", "scripts/extract.mjs", "scripts/eval-extract.mjs", "electron/main.mjs", "electron/preload.cjs", ...sourceFiles]) {
   execFileSync(process.execPath, ["--check", path.join(directory, file)], { stdio: "inherit" });
 }
 

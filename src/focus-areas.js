@@ -238,6 +238,36 @@ export function chooseAreas(areas, { totalMinutes, freeMinutes, breakMinutes, lo
   return { areas: [], total: 0 };
 }
 
+// ---------- 固定时段 ----------
+
+const CLOCK_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function clockMinutes(value) {
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
+// 当天被钉住的时段：{ 时段 id: { start, end } }（当天的分钟数）。
+// 方向设置里的固定时段套在它的第 1 段上；当天手动改过的时间优先。只算今天要排的方向。
+export function pinsForDay(activeAreas, dayPins = {}) {
+  const pins = {};
+  const valid = new Set();
+  for (const area of activeAreas) {
+    const segments = area.segments || 1;
+    for (let segment = 1; segment <= segments; segment += 1) valid.add(entryId(area.id, segment, segments));
+    if (area.fixedTime) {
+      pins[entryId(area.id, 1, segments)] = {
+        start: clockMinutes(area.fixedTime.start),
+        end: clockMinutes(area.fixedTime.end),
+      };
+    }
+  }
+  for (const [id, pin] of Object.entries(dayPins || {})) {
+    if (valid.has(id) && pin.end > pin.start) pins[id] = { start: pin.start, end: pin.end };
+  }
+  return pins;
+}
+
 // ---------- 校验（服务器写入前用） ----------
 
 const COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
@@ -277,6 +307,14 @@ export function normalizeFocusAreas(input, previous = []) {
       ? [...new Set(raw.days.map(Number))].filter((day) => day >= 0 && day <= 6).sort()
       : [];
     const shortName = text(raw.shortName, 10) || name.slice(0, 10);
+    let fixedTime = null;
+    if (raw.fixedTime?.start || raw.fixedTime?.end) {
+      const { start, end } = raw.fixedTime;
+      if (!CLOCK_PATTERN.test(start || "") || !CLOCK_PATTERN.test(end || "") || clockMinutes(end) <= clockMinutes(start)) {
+        throw new Error(`「${name}」的固定时段要同时填开始和结束，且结束晚于开始`);
+      }
+      fixedTime = { start, end };
+    }
 
     return {
       id,
@@ -289,6 +327,7 @@ export function normalizeFocusAreas(input, previous = []) {
       days: days.length === 7 ? [] : days,
       segments,
       keepWhenCrowded: Boolean(raw.keepWhenCrowded),
+      fixedTime,
       archived: Boolean(raw.archived),
       description: text(raw.description, 200),
       placeholder: text(raw.placeholder, 100) || DEFAULT_PLACEHOLDER,
