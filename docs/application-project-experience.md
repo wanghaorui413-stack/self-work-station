@@ -7,7 +7,7 @@
 
 **项目名称：** Self Work Station｜AI 辅助的本地个人工作台
 **项目角色：** 独立开发者（需求分析、产品设计、前后端实现、测试）
-**项目时间：** 2026.06 - 至今
+**项目时间：** 2026.05 - 至今
 **技术栈：** JavaScript（原生 ES Modules）、Node.js、Electron、HTML/CSS、Claude API（结构化输出）
 **项目地址：** https://github.com/wanghaorui413-stack/self-work-station
 
